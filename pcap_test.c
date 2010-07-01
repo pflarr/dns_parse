@@ -2,6 +2,7 @@
 #include <pcap.h>
 
 #include "rtypebase.h"
+#include "rtypes.h"
 #include "types.h"
 
 #define VERBOSE
@@ -196,6 +197,32 @@ bpf_u_int32 parse_dns(bpf_u_int32 pos, const struct pcap_pkthdr *header,
            dns->qdcount, dns->ancount, dns->nscount, dns->arcount);
     #endif
     return pos + 12;
+}
+
+bpf_u_int32 parse_rr(bpf_u_int32 pos, const struct pcap_pkthdr *header, 
+                     const u_char *packet, dns_rr * rr) {
+    int i;
+    rr_parser_container * parser;
+    rr->name = NULL;
+    rr->data = NULL;
+
+    pos = read_rr_name(packet, pos, header->len, &(rr->name));
+    if (pos == 0) return 0;
+    
+    if ((header->len - pos) < 10 ) return 0;
+
+    rr->type = (packet[pos] << 8) + packet[pos+1];
+    rr->cls = (packet[pos+2] << 8) + packet[pos+3];
+    rr->ttl = 0;
+    for (i=0; i<4; i++)
+        rr->ttl = (rr->ttl << 8) + packet[pos+4+i];
+    rr->rdlength = (packet[pos+8] << 8) + packet[pos + 9];
+    if ((header->len - pos) < (10 + rr->rdlength)) return 0;
+
+    parser = find_parser(rr->cls, rr->type);
+    rr->data = parser->parser(packet, pos+10, rr->rdlength);
+
+    return pos + 10 + rr->rdlength;
 }
 
 void handler(u_char * args, const struct pcap_pkthdr *header, 

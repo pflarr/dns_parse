@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include "rtypebase.h"
 #include "rtypes.h"
+#include "strutils.h"
 
 char * A_1(u_char * packet, bpf_u_int32 pos, u_short rdlength) {
     char * data = (char *)malloc(sizeof(char)*16);
@@ -18,4 +19,6 @@ char * A_1(u_char * packet, bpf_u_int32 pos, u_short rdlength) {
     return data;
 }
 
-
+char * unknown_rtype(u_char * packet, bpf_u_int32 pos, u_short rdlength) {
+    return escape_data(packet, pos, pos + rdlength);
+}
