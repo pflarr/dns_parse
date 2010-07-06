@@ -21,6 +21,17 @@ typedef struct udp_info {
     u_short length;
 } udp_info;
 
+typedef struct dns_rr {
+    char * name;
+    u_short type;
+    u_short cls;
+    u_short ttl;
+    u_short rdlength;
+    u_short data_len;
+    char * data;
+    struct dns_rr * next;
+} dns_rr;
+
 typedef struct dns_header {
     u_short id;
     char qr;
@@ -37,17 +48,6 @@ typedef struct dns_header {
     u_short arcount;
     dns_rr * additional;
 } dns_header;
-
-typedef struct dns_rr {
-    char * name;
-    u_short type;
-    u_short cls;
-    u_short ttl;
-    u_short rdlength;
-    u_short data_len;
-    char * data;
-    struct dns_rr * next;
-} dns_rr;
 
 void dns_rr_free(dns_rr *);
 
@@ -167,7 +167,7 @@ bpf_u_int32 parse_ipv4(bpf_u_int32 pos, const struct pcap_pkthdr *header,
 }
 
 bpf_u_int32 parse_udp(bpf_u_int32 pos, const struct pcap_pkthdr *header, 
-                      const u_char *packet, upd_info * udp) {
+                      const u_char *packet, udp_info * udp) {
     u_short test;
     if (header->len - pos < 8) {
         printf("Truncated Packet(udp)\n");
