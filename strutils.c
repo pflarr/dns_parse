@@ -8,7 +8,7 @@
 #include <pcap.h>
 #include <stdlib.h>
 
-char * escape_data(u_char * packet, bpf_u_int32 start, bpf_u_int32 end) { 
+char * escape_data(const u_char * packet, bpf_u_int32 start, bpf_u_int32 end) { 
     int i,o;
     u_char c, upper, lower;
     unsigned int length=1;

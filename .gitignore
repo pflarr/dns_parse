@@ -1,0 +1,4 @@
+*.swp
+*.swo
+*.o
+test_strutils

@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include <pcap.h>
 
-#include "rtypebase.h"
 #include "rtypes.h"
 #include "types.h"
 
@@ -20,7 +19,7 @@ typedef struct udp_info {
     u_short srcport;
     u_short dstport;
     u_short length;
-} upd_info;
+} udp_info;
 
 typedef struct dns_header {
     u_short id;
@@ -39,6 +38,18 @@ typedef struct dns_header {
     dns_rr * additional;
 } dns_header;
 
+typedef struct dns_rr {
+    char * name;
+    u_short type;
+    u_short cls;
+    u_short ttl;
+    u_short rdlength;
+    u_short data_len;
+    char * data;
+    struct dns_rr * next;
+} dns_rr;
+
+void dns_rr_free(dns_rr *);
 
 int main() {
     pcap_t * pcap_file;
@@ -63,6 +74,13 @@ void print_packet(const struct pcap_pkthdr *header, const u_char *packet,
     }
     if ( i % wrap != 0) printf("\n");
     return;
+}
+
+void dns_rr_free(dns_rr * rr) {
+    if (rr->name != NULL) free(rr->name);
+    if (rr->data != NULL) free(rr->data);
+    if (rr->next != NULL) dns_rr_free(rr->next);
+    free(rr);
 }
 
 bpf_u_int32 parse_eth(const struct pcap_pkthdr *header, const u_char *packet) {

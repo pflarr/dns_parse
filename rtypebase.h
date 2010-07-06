@@ -17,7 +17,7 @@ typedef struct dns_rr {
 
 void dns_rr_free(dns_rr *);
 
-typedef char * rr_data_parser(u_char*, bpf_u_int32, u_short);
+typedef char * rr_data_parser(const u_char*, bpf_u_int32, u_short);
 
 typedef struct rr_parser_container {
     u_short rtype;
@@ -27,7 +27,5 @@ typedef struct rr_parser_container {
 rr_parser_container * find_parser(u_short, u_short);
 
 char * read_dns_name(u_char *, bpf_u_int32, bpf_u_int32); 
-
-char * escape_data(u_char *, bpf_u_int32, bpf_u_int32);
 
 #endif
