@@ -24,6 +24,6 @@ char * escape_data(const u_char *, bpf_u_int32, bpf_u_int32);
 //  id_pos - the start of the dns packet (id field)
 //  len - the length of the whole packet
 //  name - We will return read name via this pointer.
-bpf_u_int32 read_rr_name(const u_char *, bpf_u_int32, bpf_u_int32, char *);
+char * read_rr_name(const u_char *, bpf_u_int32 *, bpf_u_int32, bpf_u_int32);
 
 #endif

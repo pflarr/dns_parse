@@ -53,6 +53,7 @@ char * read_rr_name(const u_char * packet, bpf_u_int32 * packet_p,
     bpf_u_int32 name_len=0;
     char * name;
 
+
     while (packet[pos] != 0 && pos < len) {
         // Handle message compression.  
         // If the length byte starts with the bits 11, then the rest of
@@ -61,14 +62,14 @@ char * read_rr_name(const u_char * packet, bpf_u_int32 * packet_p,
         if ((packet[pos] & 0xc0) == 0xc0) {
             // Check for exceeding the packet length.
             if (pos + 1 >= len) return 0;
-            if (end_pos == 0) end_pos = pos;
+            if (end_pos == 0) end_pos = pos + 1;
             pos = id_pos + ((packet[pos] & 0x3f) << 8) + packet[pos+1];
         } else {
             name_len += packet[pos]+1;
             pos += packet[pos]+1;
         }
     }
-
+    if (end_pos == 0) end_pos = pos;
 
     if (pos >= len) return 0;
 
@@ -117,7 +118,7 @@ int main() {
     char * result = "\\x00\\x0f\\x10\\x1f\\x5c\\x7fabcdefghijklmnopqrstuvwxyz1234567890ZYXWVUTSRQPONMLKJIHGFEDCBA+_)(*&^%$#@!~`-=[]{}|;':<>?,./\\x5c \"";
     
     u_char * name_data = "5junk\x03rat\x03gov\x00tenjunkchr"
-                         "\x05hello\x03the\xc0\x05";
+                         "\x05hello\x03the\xc0\x01";
     const char * name_result = "hello.the.rat.gov";
     bpf_u_int32 pos;
 
@@ -138,9 +139,9 @@ int main() {
     s = NULL;
 
     pos = 24;
-    s = read_rr_name(name_data, &pos, 0, 40);
+    s = read_rr_name(name_data, &pos, 4, 40);
 
-    if ((strcmp(s, name_result) == 0) && pos == 35) 
+    if ((strcmp(s, name_result) == 0) && pos == 36) 
         printf("name parse test ok.\n");
     else {
         int i;

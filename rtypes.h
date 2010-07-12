@@ -4,9 +4,11 @@
 #include <pcap.h>
 #include "types.h"
 
-typedef char * rr_data_parser(const u_char*, bpf_u_int32, u_short);
+typedef char * rr_data_parser(const u_char*, bpf_u_int32, bpf_u_int32, 
+                              u_short, bpf_u_int32);
 
 typedef struct rr_parser_container {
+    u_short cls;
     u_short rtype;
     rr_data_parser * parser;
 } rr_parser_container;
@@ -17,6 +19,10 @@ char * read_dns_name(u_char *, bpf_u_int32, bpf_u_int32);
 
 // Prototype all the rr parser functions here.
 rr_data_parser A_1;
+rr_data_parser domain_name;
+rr_data_parser mx;
+rr_data_parser soa;
+
 rr_data_parser unknown_rtype;
 
 // Add them to the list of data parsers in rtypes.c.
