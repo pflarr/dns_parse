@@ -26,4 +26,5 @@ char * escape_data(const u_char *, bpf_u_int32, bpf_u_int32);
 //  name - We will return read name via this pointer.
 char * read_rr_name(const u_char *, bpf_u_int32 *, bpf_u_int32, bpf_u_int32);
 
+char * b64encode(const u_char *, bpf_u_int32, u_short);
 #endif

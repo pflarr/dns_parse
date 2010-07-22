@@ -6,7 +6,7 @@
 #include "types.h"
 #include "strutils.h"
 
-#define VERBOSE
+//#define VERBOSE
 //#define SHOW_RAW
 
 void handler(u_char *, const struct pcap_pkthdr *, const u_char *);
@@ -243,7 +243,13 @@ bpf_u_int32 parse_rr(bpf_u_int32 pos, bpf_u_int32 id_pos,
                      const struct pcap_pkthdr *header, 
                      const u_char *packet, dns_rr * rr) {
     int i;
+    bpf_u_int32 rr_start;
     rr_parser_container * parser;
+    rr_parser_container opts_cont = {0,0, opts};
+
+    bpf_u_int32 temp_pos; // Only used when parsing SRV records.
+    char * temp_data; // Also used only for SRV records.
+
     rr->name = NULL;
     rr->data = NULL;
     
@@ -255,26 +261,33 @@ bpf_u_int32 parse_rr(bpf_u_int32 pos, bpf_u_int32 id_pos,
     rr->type = (packet[pos] << 8) + packet[pos+1];
     rr->rdlength = (packet[pos+8] << 8) + packet[pos + 9];
     // Handle edns opt RR's differently.
-    if (rr->type == 41) {
-        rr->cls = 0;
-        rr->ttl = 0; 
-        parser = find_parser(0,41);
-        // We'll leave the parsing of the special EDNS opt fields to
-        // our opt rdata parser.  
-        rr->data = parser->parser(packet, pos+2, id_pos, rr->rdlength,
-                                  header->len);
-    } else {
-        rr->cls = (packet[pos+2] << 8) + packet[pos+3];
-        rr->ttl = 0;
-        for (i=0; i<4; i++)
-            rr->ttl = (rr->ttl << 8) + packet[pos+4+i];
-        if ((header->len - pos) < (10 + rr->rdlength)) return 0;
-
-        parser = find_parser(rr->cls, rr->type);
-        rr->data = parser->parser(packet, pos+10, id_pos, rr->rdlength, 
-                                  header->len);
+    switch (rr->type) {
+        case 41:
+            rr->cls = 0;
+            rr->ttl = 0; 
+            parser = &opts_cont;
+            // We'll leave the parsing of the special EDNS opt fields to
+            // our opt rdata parser.  
+            rr_start = pos + 2;
+            break;
+        default:
+            rr->cls = (packet[pos+2] << 8) + packet[pos+3];
+            rr->ttl = 0;
+            for (i=0; i<4; i++)
+                rr->ttl = (rr->ttl << 8) + packet[pos+4+i];
+            parser = find_parser(rr->cls, rr->type);
+            rr_start = pos + 10;
     }
-    
+
+    if ((header->len - pos) < (10 + rr->rdlength)) return 0;
+    rr->data = parser->parser(packet, pos+10, id_pos, rr->rdlength, 
+                              header->len);
+   /* 
+    if (rr->type == 28) {
+        printf("aaaa rr->data: %s\n", rr->data);
+    }
+    */
+
     #ifdef VERBOSE
     printf("rr->name: %s\n", rr->name);
     printf("type %d, cls %d, ttl %d, len %d\n", rr->type, rr->cls, rr->ttl,
@@ -375,7 +388,7 @@ void handler(u_char * args, const struct pcap_pkthdr *header,
     pos = parse_ipv4(pos, header, packet, &ipv4);
     if ( pos == 0) return;
     if (ipv4.proto != 17) {
-        printf("Unsupported Protocol(%d)", ipv4.proto);
+        printf("Unsupported Protocol(%d)\n", ipv4.proto);
         return;
     }
     
