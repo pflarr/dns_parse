@@ -2,7 +2,6 @@ build: dns_parse
 
 dns_parse: dns_parse.c rtypes.o strutils.o
 	gcc -lpcap  rtypes.o strutils.o -o dns_parse dns_parse.c
-	./dns_parse
 
 rtypes.o: rtypes.c rtypes.h
 	gcc -c rtypes.c
@@ -17,4 +16,3 @@ clean:
 test_strutils: strutils.c
 	gcc -o test_strutils strutils.c
 	./test_strutils
-	

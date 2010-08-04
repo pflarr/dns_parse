@@ -1,6 +1,9 @@
+#include <getopt.h>
+#include <pcap.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <pcap.h>
+#include <string.h>
+#include <time.h>
 
 #include "rtypes.h"
 #include "types.h"
@@ -8,6 +11,20 @@
 
 //#define VERBOSE
 //#define SHOW_RAW
+
+#define MAX_EXCLUDES 100
+
+// Globals passed in via the command line.
+// I don't really want these to be globals, but libpcap doesn't really 
+// have the mechanism I need to pass them to the handler.
+u_short EXCLUDED[MAX_EXCLUDES];
+u_short EXCLUDES = 0;
+char * MULTI_SEP = NULL;
+// The Additional and Name server sections are disabled by default.
+int AD_ENABLED = 0;
+#include <string.h>
+int NS_ENABLED = 0;
+int PRETTY_DATE = 0;
 
 void handler(u_char *, const struct pcap_pkthdr *, const u_char *);
 
@@ -59,17 +76,112 @@ typedef struct dns_header {
     dns_rr * additional;
 } dns_header;
 
-int main() {
+int main(int argc, char **argv) {
     pcap_t * pcap_file;
     char * errors;
     int read;
     u_char * empty = "";
-   
-    pcap_file = pcap_open_offline("current", errors);
+     
+    int c;
+    char *cvalue = NULL;
+    int arg_failure = 0;
 
-    read = pcap_dispatch(pcap_file, 30000, (pcap_handler)handler, empty);
+    const char * OPTIONS = "dfhm:nx:";
+
+    c = getopt(argc, argv, OPTIONS);
+    while (c != -1) {
+        switch (c) {
+            case 'd':
+                AD_ENABLED = 1;
+                break;
+            case 'f':
+                print_parsers();
+                return 0;
+            case 'm':
+                MULTI_SEP = optarg;
+                break;
+            case 'n':
+                NS_ENABLED = 1;
+                break;
+            case 't':
+                PRETTY_DATE = 1; 
+                break;
+            case 'x':
+                if (EXCLUDES < MAX_EXCLUDES) {
+                    int ival = atoi(optarg);
+                    if (ival == 0 || ival >= 65536) {
+                        fprintf(stderr, "Invalid excluded rtype value. "
+                                "Value must be a short int.\n");
+                        arg_failure = 1;
+                    } else {
+                        EXCLUDED[EXCLUDES] = ival;
+                        EXCLUDES++; 
+                    }
+                } else {
+                    fprintf(stderr, "Too many excluded rtypes. "
+                            "If this limit is an issue, then recompile with "
+                            "the MAX_EXCLUDES define set higher.\n");
+                    arg_failure = 1;
+                }
+                break;
+            case '?':
+                if (optopt == 'x') 
+                    fprintf(stderr, "Option -x requires an rtype number.\n");
+                else if (optopt == 'm')
+                    fprintf(stderr, "Option -m needs a delimiter string.\n");
+                else if (isprint(optopt)) 
+                    fprintf(stderr, "Unknown option -%c.\n",optopt); 
+                else 
+                    fprintf(stderr, "Invalid option char: 0x%x.\n", optopt);
+            case 'h':
+            default:
+                arg_failure = 1;
+        }
+        c = getopt(argc, argv, OPTIONS);
+    }
+
+    if (arg_failure) {
+        fprintf(stderr,
+        "Usage: dns_parse [-m<multiline separator>] [-x<rtype>] <pcap file>\n"
+        "dns_parse parses a pcap file and gives a nicely "
+        "formatted ascii string for each dns request.\n"
+        "By default the reservation records are tab separated "
+        "and the entire record is ended with a newline.\n\n"
+        "The comma separated fields printed for each request are:\n"
+        "  time - The time of the request relative to the \n"
+        "         capture source clock.\n"
+        "  srcip, dstip - the source and dest ipv4 addresses.\n"
+        "                 ipv6 support is not present.\n"
+        "  size 
+        "Args:\n"
+        "-d\n"
+        "   Enable the parsing and output of the Additional\n"
+        "   Records section. Disabled by default.\n"
+        "-f\n"
+        "   Print out documentation on the various resource \n"
+        "   record parsers.\n"
+        "-n\n"
+        "   Enable the parsing and output of the Name Server\n"
+        "   Records section. Disabled by default.\n"
+        "-m \n"
+        "   Multiline mode. Reservation records are newline\n"
+        "   separated, and the whole record ends with the\n"
+        "   separator given.\n"
+        "-t \n"
+        "   Print the time/date as in Y/M/D H:M:S format.\n"
+        "   The time will be in the local timezone.\n"
+        "-x\n"
+        "   Exclude the given reservation record types by \n"
+        "   number. This option can be given multiple times.\n"
+                        );
+        return -1;
+    }
     
-    printf("done\n");
+    pcap_file = pcap_open_offline("current", errors);
+   
+    // need to check this for overflow.
+    read = pcap_dispatch(pcap_file, -1, (pcap_handler)handler, empty);
+    
     return 0;
 }
 
@@ -206,11 +318,12 @@ bpf_u_int32 parse_udp(bpf_u_int32 pos, const struct pcap_pkthdr *header,
 bpf_u_int32 parse_questions(bpf_u_int32 pos, bpf_u_int32 id_pos, 
                             const struct pcap_pkthdr *header,
                             const u_char *packet, u_short count, 
-                            dns_question * root) {
+                            dns_question ** root) {
     
     dns_question * last = NULL;
     dns_question * current;
     u_short i;
+    *root = NULL;
 
     for (i=0; i < count; i++) {
         current = malloc(sizeof(dns_question));
@@ -225,7 +338,7 @@ bpf_u_int32 parse_questions(bpf_u_int32 pos, bpf_u_int32 id_pos,
         current->type = (packet[pos] << 8) + packet[pos+1];
         current->cls = (packet[pos+2] << 8) + packet[pos+3];
 
-        if (last == NULL) root = current;
+        if (last == NULL) *root = current;
         else last->next = current;
         last = current;
         pos = pos + 4;
@@ -282,11 +395,6 @@ bpf_u_int32 parse_rr(bpf_u_int32 pos, bpf_u_int32 id_pos,
     if ((header->len - pos) < (10 + rr->rdlength)) return 0;
     rr->data = parser->parser(packet, pos+10, id_pos, rr->rdlength, 
                               header->len);
-   /* 
-    if (rr->type == 28) {
-        printf("aaaa rr->data: %s\n", rr->data);
-    }
-    */
 
     #ifdef VERBOSE
     printf("rr->name: %s\n", rr->name);
@@ -300,10 +408,12 @@ bpf_u_int32 parse_rr(bpf_u_int32 pos, bpf_u_int32 id_pos,
 
 bpf_u_int32 parse_rr_set(bpf_u_int32 pos, bpf_u_int32 id_pos, 
                          const struct pcap_pkthdr *header,
-                         const u_char *packet, u_short count, dns_rr * root) {
+                         const u_char *packet, u_short count, 
+                         dns_rr ** root) {
     dns_rr * last = NULL;
     dns_rr * current;
     u_short i;
+    *root = NULL; 
 
     for (i=0; i < count; i++) {
         current = malloc(sizeof(dns_rr));
@@ -315,7 +425,7 @@ bpf_u_int32 parse_rr_set(bpf_u_int32 pos, bpf_u_int32 id_pos,
             printf("Truncated Packet(dns rr)\n");
             return 0;
         }
-        if (last == NULL) root = current;
+        if (last == NULL) *root = current;
         else last->next = current;
         last = current;
     }
@@ -356,28 +466,55 @@ bpf_u_int32 parse_dns(bpf_u_int32 pos, const struct pcap_pkthdr *header,
     #endif
 
     pos = parse_questions(pos+12, id_pos, header, packet, 
-                       dns->qdcount, dns->queries);
+                       dns->qdcount, &(dns->queries));
     if (pos == 0) return 0;
     pos = parse_rr_set(pos, id_pos, header, packet, 
-                       dns->ancount, dns->answers);
+                       dns->ancount, &(dns->answers));
     if (pos == 0) return 0;
-    pos = parse_rr_set(pos, id_pos, header, packet, 
-                       dns->nscount, dns->name_servers);
-    if (pos == 0) return 0;
-    pos = parse_rr_set(pos, id_pos, header, packet, 
-                       dns->arcount, dns->additional);
-    if (pos == 0) return 0;
-
+    if (NS_ENABLED || AD_ENABLED) {
+        pos = parse_rr_set(pos, id_pos, header, packet, 
+                           dns->nscount, &(dns->name_servers));
+        if (pos == 0) return 0;
+    } else dns->name_servers = NULL;
+    if (AD_ENABLED) {
+        pos = parse_rr_set(pos, id_pos, header, packet, 
+                           dns->arcount, &(dns->additional));
+        if (pos == 0) return 0;
+    } else dns->additional = NULL;
     return pos;
+}
+
+void print_rr_section(dns_rr * next, char * name, char sep) {
+    int skip;
+    int i;
+    if (next != NULL) printf("%c%s", sep, name);
+    while (next != NULL) {
+        skip = 0;
+        for (i=0; i < EXCLUDES && skip == 0; i++) 
+            if (next->type == EXCLUDED[i]) skip = 1;
+        
+        if (!skip)  
+            printf("%c%s %d %d %s", sep, next->name, next->type, next->cls,
+                                    next->data);
+        next = next->next; 
+    }
 }
 
 void handler(u_char * args, const struct pcap_pkthdr *header, 
              const u_char *packet) {
     int pos;
-    u_char proto;
     struct ipv4_info ipv4;
     struct udp_info udp;
     struct dns_header dns;
+
+    char sep;
+    char * record_sep;
+
+    char date[200];
+    char proto;
+    bpf_u_int32 dnslength;
+    struct dns_rr *next;
+    struct dns_question *qnext;
 
     #ifdef VERBOSE
     printf("\nPacket %d.%d\n", header->ts.tv_sec, header->ts.tv_usec);
@@ -396,5 +533,50 @@ void handler(u_char * args, const struct pcap_pkthdr *header,
     if ( pos == 0 ) return;
 
     pos = parse_dns(pos, header, packet, &dns);
+    if ( pos == 0 ) return;
+
+    if (PRETTY_DATE) {
+        struct tm *time;
+        size_t result;
+        const char * format = "%D %T";
+        time = gmtime(&(header->ts.tv_sec));
+        result = strftime(date, 200, format, time);
+        if (result == 0) strncpy(date, "Date format error", 20);
+    } else 
+        sprintf(date, "%d.%06d", header->ts.tv_sec, header->ts.tv_usec);
+   
+    if (MULTI_SEP == NULL) {
+        sep = '\t';
+        record_sep = "\n";
+    } else {
+        sep = '\n';
+        record_sep = MULTI_SEP;
+    }
+
+    if (ipv4.proto == 17) {
+        proto = 'u';
+        dnslength = udp.length;
+    } else if (ipv4.proto == 6) {
+        proto = 't';
+        dnslength = 0;
+    } else {    
+        proto = '?';
+        dnslength = 0;
+    }
     
+    printf("%s,%d.%d.%d.%d,%d.%d.%d.%d,%d,%c,%c,%s", date,  
+           ipv4.srcip[0], ipv4.srcip[1], ipv4.srcip[2], ipv4.srcip[3],
+           ipv4.dstip[0], ipv4.dstip[1], ipv4.dstip[2], ipv4.dstip[3],
+           dnslength, proto, dns.qr ? 'r':'q', dns.AA?"AA":"");
+    qnext = dns.queries;
+    if (qnext != NULL) printf("%cQueries", sep);
+    while (qnext != NULL) {
+        printf("%c%s %d %d", sep, qnext->name, qnext->type, qnext->cls);
+        qnext = qnext->next; 
+    }
+
+    print_rr_section(dns.answers, "Answers", sep);
+    if (NS_ENABLED) print_rr_section(dns.name_servers, "Name Servers", sep);
+    if (AD_ENABLED) print_rr_section(dns.additional, "Additional", sep);
+    printf("%c%s\n", sep, record_sep);
 }

@@ -4,50 +4,11 @@
 #include "rtypes.h"
 #include "strutils.h"
 
-// Add parser functions here, they should be prototyped in rtypes.h and
-// then defined below.
-// Some of the rtypes below use the unknown_rtype parser.  This isn't
-// because we don't know how to parse them, it's simply because that's
-// the right parser for them anyway.
-struct rr_parser_container rr_parsers[] = {{1, 1, A},
-                                           {0, 2, domain_name}, // NS
-                                           {0, 6, soa},
-                                           {0, 12, domain_name}, // PTR
-                                           {0, 5, domain_name}, // CNAME
-                                           {0, 15, mx},
-                                           {0, 16, unknown_rtype}, // TEXT
-                                           {0, 10, unknown_rtype}, // NULL
-                                           {1, 33, srv}, 
-                                           {1, 28, AAAA},
-                                           {0, 48, dnskey},
-                                           {0, 46, rrsig},
-                                           {0, 47, nsec},
-                                           {0, 43, ds}
-                                          };
+// Add new parser functions and documentation to the rr_parsers array at 
+// the bottom of this file.
 
 // This is used when a parser isn't defined for a given class, rtypes.
-rr_parser_container default_rr_parser = {0, 0, unknown_rtype};
-
-// Find the parser that corresponds to the given cls and rtype.
-rr_parser_container * find_parser(u_short cls, u_short rtype) {
-
-    extern rr_parser_container rr_parsers[];
-    extern rr_parser_container default_rr_parser;
-    unsigned int i=0, pcount = sizeof(rr_parsers)/sizeof(rr_parser_container);
-    
-    while (i < pcount) {
-        rr_parser_container pc = rr_parsers[i];
-        if ((pc.rtype == rtype || pc.rtype == 0) &&
-            (pc.cls == cls || pc.cls == 0)) {
-//            printf("Unknown class, rtype %d,%d\n", cls, rtype);
-            return &rr_parsers[i];
-        }
-        i++;
-    }
-
-    printf("Unknown class, rtype %d,%d\n", cls, rtype);
-    return &default_rr_parser;
-}
+rr_parser_container default_rr_parser = {0, 0, escape};
 
 char * mk_error(const char * msg, const u_char * packet, bpf_u_int32 pos,
                 u_short rdlength) {
@@ -59,6 +20,8 @@ char * mk_error(const char * msg, const u_char * packet, bpf_u_int32 pos,
     return buffer;
 }
 
+#define A_DOC "A (IPv4 address) format\n"\
+"A records are simply an IPv4 address, and are formatted as such."
 char * A(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 i,
          u_short rdlength, bpf_u_int32 plen) {
     char * data = (char *)malloc(sizeof(char)*16);
@@ -74,6 +37,8 @@ char * A(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 i,
     return data;
 }
 
+#define D_DOC "domain name like format\n"\
+"A DNS like name. This format is used for many record types."
 char * domain_name(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
                    u_short rdlength, bpf_u_int32 plen) {
     // We use a dummy position variable because we already know the length of
@@ -83,6 +48,8 @@ char * domain_name(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
     return read_rr_name(packet, &dummy_pos, id_pos, plen);
 }
 
+#define SOA_DOC "Start of Authority format\n"\
+"Presented as a series of labeled SOA fields."
 char * soa(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
                    u_short rdlength, bpf_u_int32 plen) {
     char * mname;
@@ -115,6 +82,8 @@ char * soa(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
     return buffer;
 }
 
+#define MX_DOC "Mail Exchange record format\n"\
+"A standard dns name preceded by a preference number."
 char * mx(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
                    u_short rdlength, bpf_u_int32 plen) {
 
@@ -126,11 +95,18 @@ char * mx(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
     name = read_rr_name(packet, &pos, id_pos, plen);
 
     buffer = malloc(sizeof(char)*(20 + strlen(name)));
-    sprintf(buffer, "preference: %d, %s", pref, name);
+    sprintf(buffer, "pref: %d, %s", pref, name);
     free(name);
     return buffer;
 }
 
+#define OPTS_DOC "EDNS option record format\n"\
+"These records contain a size field for warning about extra large DNS \n"\
+"packets, an extended rcode, and an optional set of dynamic fields.\n"\
+"The size and extended rcode are printed, but the dynamic fields are \n"\
+"simply escaped. Note that the associated format function is non-standard,\n"\
+"as EDNS records modify the basic resourse record protocol (there is no \n"\
+"class field, for instance. RFC 2671""
 char * opts(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
                   u_short rdlength, bpf_u_int32 plen) {
     u_short payload_size = (packet[pos] << 8) + packet[pos+1];
@@ -146,6 +122,10 @@ char * opts(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
     return buffer;
 }
 
+#define SRV_DOC "Service record format. RFC 2782\n"\
+"Service records are used to identify various network services and ports.\n"\
+"The format is: 'priority,weight,port target'\n"\
+"The target is a somewhat standard DNS name."
 char * srv(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
                  u_short rdlength, bpf_u_int32 plen) {
     u_short priority = (packet[pos] << 8) + packet[pos+1];
@@ -162,7 +142,8 @@ char * srv(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
     return buffer;
 }
 
-
+#define AAAA_DOC "IPv6 record format.  RFC 3596\n"\
+"A standard IPv6 address. No attempt is made to abbreviate the address."
 char * AAAA(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
                   u_short rdlength, bpf_u_int32 plen) {
     char *buffer;
@@ -182,6 +163,10 @@ char * AAAA(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
     return buffer;
 }
 
+#define KEY_DOC "dnssec Key format. RFC 4034\n"\
+"format: flags, proto, algorithm, key\n"\
+"All fields except the key are printed as decimal numbers.\n"\
+"The key is given in base64. "
 char * dnskey(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
                     u_short rdlength, bpf_u_int32 plen) {
     u_short flags = (packet[pos] << 8) + packet[pos+1];
@@ -197,6 +182,11 @@ char * dnskey(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
     return buffer;
 }
 
+#define RRSIG_DOC "DNS SEC Signature. RFC 4304\n"\
+"format: tc,alg,labels,ottl,expiration,inception,tag signer signature\n"\
+"All fields except the signer and signature are given as decimal numbers.\n"\
+"The signer is a standard DNS name.\n"\
+"The signature is base64 encoded."
 char * rrsig(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
                    u_short rdlength, bpf_u_int32 plen) {
     bpf_u_int32 o_pos = pos;
@@ -231,6 +221,9 @@ char * rrsig(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
     return buffer;
 }
 
+#define NSEC_DOC "NSEC format.  RFC 4034\n"\
+"Format: domain bitmap\n"\
+"domain is a DNS name, bitmap is hex escaped."
 char * nsec(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
                   u_short rdlength, bpf_u_int32 plen) {
 
@@ -246,6 +239,10 @@ char * nsec(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
 
 }
 
+#define DS_DOC "DS DNS SEC record.  RFC 4034\n"\
+"format: key_tag,algorithm,digest_type,digest\n"\
+"The keytag, algorithm, and digest type are given as base 10.\n"\
+"The digest is base64 encoded."
 char * ds(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,                     u_short rdlength, bpf_u_int32 plen) {
     u_short key_tag = (packet[pos] << 8) + packet[pos+1];
     u_char alg = packet[pos+2];
@@ -259,7 +256,68 @@ char * ds(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,           
     return buffer;
 }
 
-char * unknown_rtype(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 i,
+#define NULL_DOC "This data is simply hex escaped. \n"\
+"Non printable characters are given as a hex value (\\x30), for example."
+char * escape(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 i,
                      u_short rdlength, bpf_u_int32 plen) {
     return escape_data(packet, pos, pos + rdlength);
+}
+
+// Add parser functions here, they should be prototyped in rtypes.h and
+// then defined below.
+// Some of the rtypes below use the escape parser.  This isn't
+// because we don't know how to parse them, it's simply because that's
+// the right parser for them anyway.
+struct rr_parser_container rr_parsers[] = {{1, 1, A, "A", A_DOC},
+                                           {0, 2, domain_name, "NS", D_DOC}, 
+                                           {0, 6, soa, "SOA", SOA_DOC},
+                                           {0, 12, domain_name, "PTR", D_DOC}, 
+                                           {0, 5, domain_name, "CNAME", D_DOC},
+                                           {0, 15, mx, "MX", MX_DOC},
+                                           {0, 16, escape, "TEXT", NULL_DOC}, 
+                                           {0, 10, escape, "NULL", NULL_DOC}, 
+                                           {1, 33, srv, "SRV", SRV_DOC}, 
+                                           {1, 28, AAAA, "AAAA", AAAA_DOC},
+                                           {0, 48, dnskey, "DNSKEY", KEY_DOC},
+                                           {0, 46, rrsig, "RRSIG", RRSIG_DOC},
+                                           {0, 47, nsec, "NSEC", NSEC_DOC},
+                                           {0, 43, ds, "DS", DS_DOC}
+                                          };
+
+// Find the parser that corresponds to the given cls and rtype.
+rr_parser_container * find_parser(u_short cls, u_short rtype) {
+
+    unsigned int i=0, pcount = sizeof(rr_parsers)/sizeof(rr_parser_container);
+    
+    while (i < pcount) {
+        rr_parser_container pc = rr_parsers[i];
+        if ((pc.rtype == rtype || pc.rtype == 0) &&
+            (pc.cls == cls || pc.cls == 0)) {
+            return &rr_parsers[i];
+        }
+        i++;
+    }
+
+    fprintf(stderr,"Unknown class, rtype %d,%d\n", cls, rtype);
+    return &default_rr_parser;
+}
+
+void print_parsers() {
+    int i;
+    printf("What follows is a list of handled DNS classes and resource \n"
+           "record types. \n"
+           " - The class # may be listed as 'any', though anything \n"
+           "   other than the internet class is rarely seen. \n"
+           " - Parsers for records other than those in RFC 1035 should \n"
+           "   have their RFC listed. \n"
+           " - Unhandled resource records are simply string escaped.\n"
+           " - Some resource records share parsers and documentation.\n\n"
+           "class, rtype, name: documentation\n");
+    for (i=0; i < sizeof(rr_parsers)/sizeof(rr_parser_container); i++) {
+        struct rr_parser_container cont = rr_parsers[i];
+        if (cont.cls == 0) printf("any,");
+        else printf("%d,", cont.cls);
+
+        printf(" %d, %s: %s\n\n", cont.rtype, cont.name, cont.doc);
+    }
 }

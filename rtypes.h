@@ -11,6 +11,8 @@ typedef struct rr_parser_container {
     u_short cls;
     u_short rtype;
     rr_data_parser * parser;
+    const char * name;
+    const char * doc;
 } rr_parser_container;
 
 rr_parser_container * find_parser(u_short, u_short);
@@ -30,7 +32,7 @@ rr_data_parser rrsig;
 rr_data_parser nsec;
 rr_data_parser ds;
 
-rr_data_parser unknown_rtype;
+rr_data_parser escape;
 
 // Add them to the list of data parsers in rtypes.c.
 extern rr_parser_container rr_parsers[];
@@ -38,4 +40,5 @@ extern rr_parser_container rr_parsers[];
 // This is for handling rr's with errors or an unhandled rtype.
 rr_parser_container default_rr_parser;
 
+void print_parsers();
 #endif

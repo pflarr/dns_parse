@@ -53,7 +53,6 @@ char * read_rr_name(const u_char * packet, bpf_u_int32 * packet_p,
     bpf_u_int32 name_len=0;
     char * name;
 
-
     while (packet[pos] != 0 && pos < len) {
         // Handle message compression.  
         // If the length byte starts with the bits 11, then the rest of
@@ -79,7 +78,12 @@ char * read_rr_name(const u_char * packet, bpf_u_int32 * packet_p,
     //Now actually assemble the name.
     //We've already made sure that we don't exceed the packet length, so
     // we don't need to make those checks anymore.
-    // Next is where to next check for a length or end of packet.
+    // Non-printable and whitespace characters are replaced with a question
+    // mark. They shouldn't be allowed under any circumstances anyway.
+    // Other non-allowed characters are kept as is, as they appear sometimes
+    // regardless.
+    // This shouldn't interfere with IDNA (international
+    // domain names), as those are ascii encoded.
     next = pos;
     i = 0;
     while (next != pos || packet[pos] != 0) {
@@ -94,8 +98,15 @@ char * read_rr_name(const u_char * packet, bpf_u_int32 * packet_p,
                 pos++;
             }
         } else {
-            name[i] = packet[pos];
-            i++; pos++;
+            char c = packet[pos];
+            if (c >= '!' && c <= '~') {
+                name[i] = packet[pos];
+                i++; pos++;
+            } else {
+                fprintf(stderr, "Unexpected char in dns name: 0x%x %c\n", c, c);
+                name[i] = '?';
+                i++; pos++;
+            }
         }
     }
     name[i] = 0;
