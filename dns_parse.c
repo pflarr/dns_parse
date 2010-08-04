@@ -78,10 +78,10 @@ typedef struct dns_header {
 
 int main(int argc, char **argv) {
     pcap_t * pcap_file;
-    char * errors;
+    char errbuf[PCAP_ERRBUF_SIZE];
     int read;
     u_char * empty = "";
-     
+    
     int c;
     char *cvalue = NULL;
     int arg_failure = 0;
@@ -140,9 +140,23 @@ int main(int argc, char **argv) {
         c = getopt(argc, argv, OPTIONS);
     }
 
+    if (optind == argc - 1) {
+        pcap_file = pcap_open_offline(argv[optind], errbuf);
+        if (pcap_file == NULL) {
+            printf("Could not open pcapfile.\n%s\n", errbuf);
+            return -1;
+        }
+    } else if (optind >= argc) {
+        fprintf(stderr, "No input file specified.\n");
+        arg_failure = 1;
+    } else {
+        fprintf(stderr, "Multiple input files or bad arguments.");
+        arg_failure = 1;
+    }
+    
     if (arg_failure) {
         fprintf(stderr,
-        "Usage: dns_parse [-m<multiline separator>] [-x<rtype>] <pcap file>\n"
+        "Usage: dns_parse [-dnthf] [-m<query sep.>] [-x<rtype>] <pcap file>\n"
         "dns_parse parses a pcap file and gives a nicely "
         "formatted ascii string for each dns request.\n"
         "By default the reservation records are tab separated "
@@ -152,8 +166,12 @@ int main(int argc, char **argv) {
         "         capture source clock.\n"
         "  srcip, dstip - the source and dest ipv4 addresses.\n"
         "                 ipv6 support is not present.\n"
-        "  size 
+        "  size - the size of the dns portion of the message.\n"
+        "  proto - udp (u) or tcp(t)\n"
+        "  query/response - is it a query(q) or response(r)\n"
+        "  authoritative - marked with AA if authoritative\n\n"
         "Args:\n"
+        "<pcapfile> - The pcapfile to parse. Use a '-' for stdin\n"
         "-d\n"
         "   Enable the parsing and output of the Additional\n"
         "   Records section. Disabled by default.\n"
@@ -176,9 +194,7 @@ int main(int argc, char **argv) {
                         );
         return -1;
     }
-    
-    pcap_file = pcap_open_offline("current", errors);
-   
+ 
     // need to check this for overflow.
     read = pcap_dispatch(pcap_file, -1, (pcap_handler)handler, empty);
     
