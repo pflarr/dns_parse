@@ -120,7 +120,6 @@ char * read_rr_name(const u_char * packet, bpf_u_int32 * packet_p,
                 name[i] = packet[pos];
                 i++; pos++;
             } else {
-                printf("confusing\n");
                 name[i] = '\\';
                 name[i+1] = 'x';
                 name[i+2] = c/16 + 0x30;
