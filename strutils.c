@@ -52,23 +52,40 @@ char * read_rr_name(const u_char * packet, bpf_u_int32 * packet_p,
     bpf_u_int32 end_pos = 0;
     bpf_u_int32 name_len=0;
     char * name;
+    int bc = 0;
+    unsigned char badchars[2000];
 
-    while (packet[pos] != 0 && pos < len) {
-        // Handle message compression.  
-        // If the length byte starts with the bits 11, then the rest of
-        // this byte and the next form the offset from the dns proto start
-        // to the start of the remainder of the name.
-        if ((packet[pos] & 0xc0) == 0xc0) {
-            // Check for exceeding the packet length.
-            if (pos + 1 >= len) return 0;
-            if (end_pos == 0) end_pos = pos + 1;
-            pos = id_pos + ((packet[pos] & 0x3f) << 8) + packet[pos+1];
+    // Scan through the name, one character at a time. We need to look at 
+    // each character to look for values we can't print in order to allocate
+    // extra space for escaping them.  'next' is the next position to look
+    // for a compression jump or name end.
+    next = pos;
+    while (pos < len && !(next == pos && packet[pos] == 0)) {
+        unsigned char c = packet[pos];
+        if (next == pos) {
+            // Handle message compression.  
+            // If the length byte starts with the bits 11, then the rest of
+            // this byte and the next form the offset from the dns proto start
+            // to the start of the remainder of the name.
+            if ((c & 0xc0) == 0xc0) {
+                if (pos + 1 >= len) return 0;
+                if (end_pos == 0) end_pos = pos + 1;
+                pos = id_pos + ((c & 0x3f) << 8) + packet[pos+1];
+                next = pos;
+            } else {
+                name_len++;
+                pos++;
+                next = next + c + 1; 
+            }
         } else {
-            name_len += packet[pos]+1;
-            pos += packet[pos]+1;
+            if (c >= '!' && c <= 'z' && c != '\\') name_len++;
+            else name_len += 4;
+            pos++;
         }
     }
     if (end_pos == 0) end_pos = pos;
+    
+    name_len++;
 
     if (pos >= len) return 0;
 
@@ -98,14 +115,20 @@ char * read_rr_name(const u_char * packet, bpf_u_int32 * packet_p,
                 pos++;
             }
         } else {
-            char c = packet[pos];
-            if (c >= '!' && c <= '~') {
+            unsigned char c = packet[pos];
+            if (c >= '!' && c <= '~' && c != '\\') {
                 name[i] = packet[pos];
                 i++; pos++;
             } else {
-                fprintf(stderr, "Unexpected char in dns name: 0x%x %c\n", c, c);
-                name[i] = '?';
-                i++; pos++;
+                printf("confusing\n");
+                name[i] = '\\';
+                name[i+1] = 'x';
+                name[i+2] = c/16 + 0x30;
+                name[i+3] = c%16 + 0x30;
+                if (name[i+2] > 0x39) name[i+2] += 0x27;
+                if (name[i+3] > 0x39) name[i+3] += 0x27;
+                i+=4; 
+                pos++;
             }
         }
     }
@@ -171,9 +194,9 @@ int main() {
     char * s = escape_data(ed_data, 2, 103);
     char * result = "\\x00\\x0f\\x10\\x1f\\x5c\\x7fabcdefghijklmnopqrstuvwxyz1234567890ZYXWVUTSRQPONMLKJIHGFEDCBA+_)(*&^%$#@!~`-=[]{}|;':<>?,./\\x5c \"";
     
-    u_char * name_data = "5junk\x03rat\x03gov\x00tenjunkchr"
+    u_char * name_data = "5junk\x03rat\x04\x7f\x00\xe3\\\x03gov\x00tenjunkchr"
                          "\x05hello\x03the\xc0\x01";
-    const char * name_result = "hello.the.rat.gov";
+    const char * name_result = "hello.the.rat.\\x7f\\x00\\xe3\\x5c.gov";
     bpf_u_int32 pos;
     int i;
     u_char b64data[256];
@@ -197,15 +220,17 @@ int main() {
     free(s);
     s = NULL;
 
-    pos = 24;
-    s = read_rr_name(name_data, &pos, 4, 40);
+    pos = 29;
+    s = read_rr_name(name_data, &pos, 4, 41);
 
-    if ((strcmp(s, name_result) == 0) && pos == 36) 
+    if ((strcmp(s, name_result) == 0) && pos == 41) 
         printf("name parse test ok.\n");
     else {
-        printf("name parse test failed.\n");
-        for (i=0; i<17; i++)
-            printf("%d, %d\n", s[i], name_result[i]);
+        printf("pos: %d\n", pos);
+        printf("name parse test failed: \n%s\n%s\n", s,name_result);
+        for (i=0; i<35; i++)
+            printf("%x, %x, %c, %c\n", s[i], name_result[i],
+                                       s[i], name_result[i]);
     }
 
     free(s); 

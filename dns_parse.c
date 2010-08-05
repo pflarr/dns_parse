@@ -214,15 +214,17 @@ void print_packet(const struct pcap_pkthdr *header, const u_char *packet,
 }
 
 void dns_rr_free(dns_rr * rr) {
+    if (rr == NULL) return;
     if (rr->name != NULL) free(rr->name);
     if (rr->data != NULL) free(rr->data);
-    if (rr->next != NULL) dns_rr_free(rr->next);
+    dns_rr_free(rr->next);
     free(rr);
 }
 
 void dns_question_free(dns_question * question) {
+    if (question == NULL) return;
     if (question->name != NULL) free(question->name);
-    if (question->next != NULL) free(question->next);
+    dns_question_free(question->next);
     free(question);
 }
 
@@ -595,4 +597,9 @@ void handler(u_char * args, const struct pcap_pkthdr *header,
     if (NS_ENABLED) print_rr_section(dns.name_servers, "Name Servers", sep);
     if (AD_ENABLED) print_rr_section(dns.additional, "Additional", sep);
     printf("%c%s\n", sep, record_sep);
+
+    dns_question_free(dns.queries);
+    dns_rr_free(dns.answers);
+    dns_rr_free(dns.name_servers);
+    dns_rr_free(dns.additional);
 }
