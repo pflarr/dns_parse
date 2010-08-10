@@ -25,6 +25,7 @@ int AD_ENABLED = 0;
 #include <string.h>
 int NS_ENABLED = 0;
 int PRETTY_DATE = 0;
+int MISSING_TYPE_WARNINGS = 0;
 
 void handler(u_char *, const struct pcap_pkthdr *, const u_char *);
 
@@ -84,9 +85,10 @@ int main(int argc, char **argv) {
     
     int c;
     char *cvalue = NULL;
+    int print_type_freq = 0;
     int arg_failure = 0;
 
-    const char * OPTIONS = "dfhm:nx:";
+    const char * OPTIONS = "dfhm:Mnux:";
 
     c = getopt(argc, argv, OPTIONS);
     while (c != -1) {
@@ -100,11 +102,17 @@ int main(int argc, char **argv) {
             case 'm':
                 MULTI_SEP = optarg;
                 break;
+            case 'M':
+                MISSING_TYPE_WARNINGS = 1;
+                break;
             case 'n':
                 NS_ENABLED = 1;
                 break;
             case 't':
                 PRETTY_DATE = 1; 
+                break;
+            case 'u':
+                print_type_freq = 1;
                 break;
             case 'x':
                 if (EXCLUDES < MAX_EXCLUDES) {
@@ -185,9 +193,15 @@ int main(int argc, char **argv) {
         "   Multiline mode. Reservation records are newline\n"
         "   separated, and the whole record ends with the\n"
         "   separator given.\n"
+        "-M \n"
+        "   Print a message for each occurance of a missing class,type\n"
+        "   parser.\n"
         "-t \n"
         "   Print the time/date as in Y/M/D H:M:S format.\n"
         "   The time will be in the local timezone.\n"
+        "-u \n"
+        "   Print a record of the how many occurances of each class,type\n"
+        "   record occurred via stderr when processing completes.\n"
         "-x\n"
         "   Exclude the given reservation record types by \n"
         "   number. This option can be given multiple times.\n"
@@ -197,6 +211,8 @@ int main(int argc, char **argv) {
  
     // need to check this for overflow.
     read = pcap_dispatch(pcap_file, -1, (pcap_handler)handler, empty);
+   
+    if (print_type_freq) print_parser_usage();
     
     return 0;
 }
@@ -409,6 +425,10 @@ bpf_u_int32 parse_rr(bpf_u_int32 pos, bpf_u_int32 id_pos,
             parser = find_parser(rr->cls, rr->type);
             rr_start = pos + 10;
     }
+
+    if (MISSING_TYPE_WARNINGS && &default_rr_parser == parser) 
+        fprintf(stderr, "Missing parser for class %d, type %d\n", 
+                        rr->cls, rr->type);
 
     if ((header->len - pos) < (10 + rr->rdlength)) return 0;
     rr->data = parser->parser(packet, pos+10, id_pos, rr->rdlength, 

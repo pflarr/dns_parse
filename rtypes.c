@@ -8,7 +8,7 @@
 // the bottom of this file.
 
 // This is used when a parser isn't defined for a given class, rtypes.
-rr_parser_container default_rr_parser = {0, 0, escape};
+rr_parser_container default_rr_parser = {0, 0, escape, "UNDEFINED", NULL, 0};
 
 char * mk_error(const char * msg, const u_char * packet, bpf_u_int32 pos,
                 u_short rdlength) {
@@ -268,38 +268,83 @@ char * escape(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 i,
 // Some of the rtypes below use the escape parser.  This isn't
 // because we don't know how to parse them, it's simply because that's
 // the right parser for them anyway.
-struct rr_parser_container rr_parsers[] = {{1, 1, A, "A", A_DOC},
-                                           {0, 2, domain_name, "NS", D_DOC}, 
-                                           {0, 6, soa, "SOA", SOA_DOC},
-                                           {0, 12, domain_name, "PTR", D_DOC}, 
-                                           {0, 5, domain_name, "CNAME", D_DOC},
-                                           {0, 15, mx, "MX", MX_DOC},
-                                           {0, 16, escape, "TEXT", NULL_DOC}, 
-                                           {0, 10, escape, "NULL", NULL_DOC}, 
-                                           {1, 33, srv, "SRV", SRV_DOC}, 
-                                           {1, 28, AAAA, "AAAA", AAAA_DOC},
-                                           {0, 48, dnskey, "DNSKEY", KEY_DOC},
-                                           {0, 46, rrsig, "RRSIG", RRSIG_DOC},
-                                           {0, 47, nsec, "NSEC", NSEC_DOC},
-                                           {0, 43, ds, "DS", DS_DOC}
+struct rr_parser_container rr_parsers[] = {{1, 1, A, "A", A_DOC, 0},
+                                           {0, 2, domain_name, "NS", D_DOC, 0},
+                                           {0, 6, soa, "SOA", SOA_DOC, 0},
+                                           {0, 12, domain_name, "PTR", 
+                                                            D_DOC, 0},
+                                           {0, 5, domain_name, "CNAME", 
+                                                            D_DOC, 0},
+                                           {0, 15, mx, "MX", MX_DOC, 0},
+                                           {0, 16, escape, "TEXT", 
+                                                            NULL_DOC, 0}, 
+                                           {0, 10, escape, "NULL",
+                                                            NULL_DOC, 0}, 
+                                           {1, 33, srv, "SRV", SRV_DOC, 0}, 
+                                           {1, 28, AAAA, "AAAA", AAAA_DOC, 0},
+                                           {0, 48, dnskey, "DNSKEY", 
+                                                            KEY_DOC, 0},
+                                           {0, 46, rrsig, "RRSIG", 
+                                                            RRSIG_DOC, 0},
+                                           {0, 47, nsec, "NSEC", 
+                                                            NSEC_DOC, 0},
+                                           {0, 43, ds, "DS", DS_DOC, 0}
                                           };
 
+inline int count_parsers() {
+    return sizeof(rr_parsers)/sizeof(rr_parser_container);
+}
+
+void sort_parsers() {
+    int m,n;
+    int change = 1;
+    int pcount = count_parsers();
+    struct rr_parser_container tmp;
+    for (m = 0; m < pcount - 1 && change == 1; m++) {
+        change = 0;
+        for (n = 0; n < pcount - 1; n++) {
+            if (rr_parsers[n].count < rr_parsers[n+1].count) {
+                tmp = rr_parsers[n];
+                rr_parsers[n] = rr_parsers[n+1];
+                rr_parsers[n+1] = tmp;
+                change = 1;
+            }
+        }
+    }
+}
+
+unsigned int PACKETS_SEEN = 0;
+#define REORDER_LIMIT 100000
 // Find the parser that corresponds to the given cls and rtype.
 rr_parser_container * find_parser(u_short cls, u_short rtype) {
 
-    unsigned int i=0, pcount = sizeof(rr_parsers)/sizeof(rr_parser_container);
-    
-    while (i < pcount) {
+    unsigned int i=0, pcount = count_parsers();
+    rr_parser_container * found = NULL;
+   
+    // Re-arrange the order of the parsers according to how often things are 
+    // seen every REORDER_LIMIT packets.
+    if (PACKETS_SEEN > REORDER_LIMIT) {
+        PACKETS_SEEN = 0;
+        sort_parsers();
+    } 
+    PACKETS_SEEN++;
+
+    while (i < pcount && found == NULL) {
         rr_parser_container pc = rr_parsers[i];
         if ((pc.rtype == rtype || pc.rtype == 0) &&
             (pc.cls == cls || pc.cls == 0)) {
-            return &rr_parsers[i];
+            rr_parsers[i].count++;
+            found = &rr_parsers[i];
+            break;
         }
         i++;
     }
 
-    fprintf(stderr,"Unknown class, rtype %d,%d\n", cls, rtype);
-    return &default_rr_parser;
+    if (found == NULL) 
+        found = &default_rr_parser;
+    
+    found->count++;
+    return found;
 }
 
 void print_parsers() {
@@ -313,11 +358,24 @@ void print_parsers() {
            " - Unhandled resource records are simply string escaped.\n"
            " - Some resource records share parsers and documentation.\n\n"
            "class, rtype, name: documentation\n");
-    for (i=0; i < sizeof(rr_parsers)/sizeof(rr_parser_container); i++) {
+    for (i=0; i < count_parsers(); i++) {
         struct rr_parser_container cont = rr_parsers[i];
         if (cont.cls == 0) printf("any,");
         else printf("%d,", cont.cls);
 
         printf(" %d, %s: %s\n\n", cont.rtype, cont.name, cont.doc);
     }
+}
+
+void print_parser_usage() {
+    int i;
+    struct rr_parser_container pc;
+
+    fprintf(stderr, "parser usage:\n");
+    for (i=0; i < count_parsers(); i++) {
+        pc = rr_parsers[i];
+        fprintf(stderr, "  %s - %d\n", pc.name, pc.count);
+    }
+
+    fprintf(stderr, "  undefined parser - %d\n", default_rr_parser.count);
 }
