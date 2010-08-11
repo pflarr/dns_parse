@@ -1,7 +1,8 @@
 build: dns_parse
 
 install:
-	cp dns_parse ${DESTDIR}/bin/
+	mkdir -p ${DESTDIR}/usr/local/sbin/
+	cp bin/dns_parse ${DESTDIR}/usr/local/sbin/
 
 src_tar:
 	mkdir dns_parse-${version}
@@ -9,6 +10,7 @@ src_tar:
 	tar -czf dns_parse-${version}.tar.gz dns_parse-${version}
 
 dns_parse: dns_parse.c rtypes.o strutils.o
+	mkdir bin
 	gcc -lpcap rtypes.o strutils.o -o bin/dns_parse dns_parse.c
 
 rtypes.o: rtypes.c rtypes.h
@@ -22,5 +24,6 @@ clean:
 	rm -rf bin dns_parse-*
 
 test_strutils: strutils.c
+	mkdir bin
 	gcc -o bin/test_strutils strutils.c
 	./bin/test_strutils
