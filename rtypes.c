@@ -284,11 +284,11 @@ struct rr_parser_container rr_parsers[] = {{1, 1, A, "A", A_DOC, 0},
                                                             NULL_DOC, 0}, 
                                            {0, 47, nsec, "NSEC", 
                                                             NSEC_DOC, 0},
-                                           {0, 43, ds, "DS", DS_DOC, 0}
+                                           {0, 43, ds, "DS", DS_DOC, 0},
                                            {0, 10, escape, "NULL",
                                                             NULL_DOC, 0}, 
                                            {0, 48, dnskey, "DNSKEY", 
-                                                            KEY_DOC, 0},
+                                                            KEY_DOC, 0}
                                           };
 
 inline int count_parsers() {
