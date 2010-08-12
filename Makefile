@@ -1,4 +1,4 @@
-build: dns_parse
+build: bin/dns_parse
 
 install:
 	mkdir -p ${DESTDIR}/usr/local/sbin/
@@ -9,8 +9,8 @@ src_tar:
 	cp *.c *.h Makefile dns_parse-${version}/
 	tar -czf dns_parse-${version}.tar.gz dns_parse-${version}
 
-dns_parse: dns_parse.c rtypes.o strutils.o
-	mkdir bin
+bin/dns_parse: dns_parse.c rtypes.o strutils.o
+	mkdir -p bin
 	gcc -lpcap rtypes.o strutils.o -o bin/dns_parse dns_parse.c
 
 rtypes.o: rtypes.c rtypes.h

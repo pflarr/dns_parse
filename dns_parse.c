@@ -88,7 +88,7 @@ int main(int argc, char **argv) {
     int print_type_freq = 0;
     int arg_failure = 0;
 
-    const char * OPTIONS = "dfhm:Mnux:";
+    const char * OPTIONS = "dfhm:Mnutx:";
 
     c = getopt(argc, argv, OPTIONS);
     while (c != -1) {
@@ -577,7 +577,7 @@ void handler(u_char * args, const struct pcap_pkthdr *header,
         struct tm *time;
         size_t result;
         const char * format = "%D %T";
-        time = gmtime(&(header->ts.tv_sec));
+        time = localtime(&(header->ts.tv_sec));
         result = strftime(date, 200, format, time);
         if (result == 0) strncpy(date, "Date format error", 20);
     } else 
