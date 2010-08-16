@@ -11,13 +11,13 @@ src_tar:
 
 bin/dns_parse: dns_parse.c rtypes.o strutils.o
 	mkdir -p bin
-	gcc -lpcap rtypes.o strutils.o -o bin/dns_parse dns_parse.c
+	gcc -g -lpcap rtypes.o strutils.o -o bin/dns_parse dns_parse.c
 
 rtypes.o: rtypes.c rtypes.h
-	gcc -c rtypes.c
+	gcc -g -c rtypes.c
 
 strutils.o: strutils.h strutils.c
-	gcc -c strutils.c
+	gcc -g -c strutils.c
 
 clean:
 	rm -f *.o

@@ -353,7 +353,7 @@ bpf_u_int32 parse_questions(bpf_u_int32 pos, bpf_u_int32 id_pos,
                             const struct pcap_pkthdr *header,
                             const u_char *packet, u_short count, 
                             dns_question ** root) {
-    
+    bpf_u_int32 start_pos = pos; 
     dns_question * last = NULL;
     dns_question * current;
     u_short i;
@@ -365,8 +365,16 @@ bpf_u_int32 parse_questions(bpf_u_int32 pos, bpf_u_int32 id_pos,
 
         current->name = read_rr_name(packet, &pos, id_pos, header->len);
         if (current->name == NULL || (pos + 2) >= header->len) {
-            dns_question_free(current);
-            printf("Truncated Packet(dns question)\n");
+            printf("DNS question error\n");
+            char * buffer = escape_data(packet, start_pos, header->len);
+            const char * msg = "Bad DNS question: ";
+            current->name = malloc(sizeof(char) * (strlen(buffer) +
+                                                   strlen(msg) + 1));
+            sprintf(current->name, "%s%s", msg, buffer);
+            current->type = 0;
+            current->cls = 0;
+            if (last == NULL) *root = current;
+            else last->next = current;
             return 0;
         }
         current->type = (packet[pos] << 8) + packet[pos+1];
@@ -390,7 +398,7 @@ bpf_u_int32 parse_rr(bpf_u_int32 pos, bpf_u_int32 id_pos,
                      const struct pcap_pkthdr *header, 
                      const u_char *packet, dns_rr * rr) {
     int i;
-    bpf_u_int32 rr_start;
+    bpf_u_int32 rr_start = pos;
     rr_parser_container * parser;
     rr_parser_container opts_cont = {0,0, opts};
 
@@ -401,7 +409,18 @@ bpf_u_int32 parse_rr(bpf_u_int32 pos, bpf_u_int32 id_pos,
     rr->data = NULL;
     
     rr->name = read_rr_name(packet, &pos, id_pos, header->len);
-    if (pos == 0) return 0;
+    // Handle a bad rr name.
+    // We still want to print the rest of the escaped rr data.
+    if (rr->name == NULL) {
+        const char * msg = "Bad rr name: ";
+        rr->name = malloc(sizeof(char) * (strlen(msg) + 1));
+        sprintf(rr->name, "%s", "Bad rr name");
+        rr->type = 0;
+        rr->cls = 0;
+        rr->ttl = 0;
+        rr->data = escape_data(packet, pos, header->len);
+        return 0;
+    }
     
     if ((header->len - pos) < 10 ) return 0;
 
@@ -415,7 +434,7 @@ bpf_u_int32 parse_rr(bpf_u_int32 pos, bpf_u_int32 id_pos,
             parser = &opts_cont;
             // We'll leave the parsing of the special EDNS opt fields to
             // our opt rdata parser.  
-            rr_start = pos + 2;
+            pos = pos + 2;
             break;
         default:
             rr->cls = (packet[pos+2] << 8) + packet[pos+3];
@@ -423,17 +442,29 @@ bpf_u_int32 parse_rr(bpf_u_int32 pos, bpf_u_int32 id_pos,
             for (i=0; i<4; i++)
                 rr->ttl = (rr->ttl << 8) + packet[pos+4+i];
             parser = find_parser(rr->cls, rr->type);
-            rr_start = pos + 10;
+            pos = pos + 10;
     }
+
+    #ifdef VERBOSE
+    printf("Applying RR parser: %s\n", parser->name);
+    #endif
 
     if (MISSING_TYPE_WARNINGS && &default_rr_parser == parser) 
         fprintf(stderr, "Missing parser for class %d, type %d\n", 
                         rr->cls, rr->type);
 
-    if ((header->len - pos) < (10 + rr->rdlength)) return 0;
-    rr->data = parser->parser(packet, pos+10, id_pos, rr->rdlength, 
+    if (header->len < (rr_start + 10 + rr->rdlength)) {
+        char * buffer;
+        const char * msg = "Truncated rr: ";
+        rr->data = escape_data(packet, rr_start, header->len);
+        buffer = malloc(sizeof(char) * (strlen(rr->data) + strlen(msg) + 1));
+        sprintf(buffer, "%s%s", msg, buffer);
+        free(rr->data);
+        rr->data = buffer;
+        return 0;
+    }
+    rr->data = parser->parser(packet, pos, id_pos, rr->rdlength, 
                               header->len);
-
     #ifdef VERBOSE
     printf("rr->name: %s\n", rr->name);
     printf("type %d, cls %d, ttl %d, len %d\n", rr->type, rr->cls, rr->ttl,
@@ -441,7 +472,7 @@ bpf_u_int32 parse_rr(bpf_u_int32 pos, bpf_u_int32 id_pos,
     printf("rr->data %s\n", rr->data);
     #endif
 
-    return pos + 10 + rr->rdlength;
+    return pos + rr->rdlength;
 }
 
 bpf_u_int32 parse_rr_set(bpf_u_int32 pos, bpf_u_int32 id_pos, 
@@ -452,15 +483,16 @@ bpf_u_int32 parse_rr_set(bpf_u_int32 pos, bpf_u_int32 id_pos,
     dns_rr * current;
     u_short i;
     *root = NULL; 
-
     for (i=0; i < count; i++) {
         current = malloc(sizeof(dns_rr));
         current->next = NULL; current->name = NULL; current->data = NULL;
         
         pos = parse_rr(pos, id_pos, header, packet, current);
+        // If a non-recoverable error occurs when parsing an rr, 
+        // we can only return what we've got and give up.
         if (pos == 0) {
-            dns_rr_free(current);
-            printf("Truncated Packet(dns rr)\n");
+            if (last == NULL) *root = current;
+            else last->next = current;
             return 0;
         }
         if (last == NULL) *root = current;
@@ -478,7 +510,8 @@ bpf_u_int32 parse_dns(bpf_u_int32 pos, const struct pcap_pkthdr *header,
     dns_rr * last = NULL;
 
     if (header->len - pos < 12) {
-        printf("Truncated Packet(dns)\n");
+        char * msg = escape_data(packet, id_pos, header->len);
+        fprintf(stderr, "Truncated Packet(dns): %s\n"); 
         return 0;
     }
 
@@ -487,11 +520,22 @@ bpf_u_int32 parse_dns(bpf_u_int32 pos, const struct pcap_pkthdr *header,
     dns->AA = (packet[pos+2] & 0x04) >> 2;
     dns->TC = (packet[pos+2] & 0x02) >> 1;
     dns->rcode = packet[pos + 3] & 0x0f;
+    // rcodes > 5 indicate various protocol errors and redefine most of the 
+    // remaining fields. Parsing this would hurt more than help. 
+    if (dns->rcode > 5) {
+        dns->qdcount = dns->ancount = dns->nscount = dns->arcount = 0;
+        dns->queries = NULL;
+        dns->answers = NULL;
+        dns->name_servers = NULL;
+        dns->additional = NULL;
+        return pos + 12;
+    }
+
     dns->qdcount = (packet[pos+4] << 8) + packet[pos+5];
     dns->ancount = (packet[pos+6] << 8) + packet[pos+7];
     dns->nscount = (packet[pos+8] << 8) + packet[pos+9];
     dns->arcount = (packet[pos+10] << 8) + packet[pos+11];
-    
+
     #ifdef VERBOSE
     #ifdef SHOW_RAW
     printf("dns\n");
@@ -505,19 +549,17 @@ bpf_u_int32 parse_dns(bpf_u_int32 pos, const struct pcap_pkthdr *header,
 
     pos = parse_questions(pos+12, id_pos, header, packet, 
                        dns->qdcount, &(dns->queries));
-    if (pos == 0) return 0;
-    pos = parse_rr_set(pos, id_pos, header, packet, 
-                       dns->ancount, &(dns->answers));
-    if (pos == 0) return 0;
-    if (NS_ENABLED || AD_ENABLED) {
+    if (pos != 0) 
+        pos = parse_rr_set(pos, id_pos, header, packet, 
+                           dns->ancount, &(dns->answers));
+    else dns->answers = NULL;
+    if (pos != 0 && (NS_ENABLED || AD_ENABLED)) {
         pos = parse_rr_set(pos, id_pos, header, packet, 
                            dns->nscount, &(dns->name_servers));
-        if (pos == 0) return 0;
     } else dns->name_servers = NULL;
-    if (AD_ENABLED) {
+    if (pos != 0 && AD_ENABLED) {
         pos = parse_rr_set(pos, id_pos, header, packet, 
                            dns->arcount, &(dns->additional));
-        if (pos == 0) return 0;
     } else dns->additional = NULL;
     return pos;
 }
@@ -530,10 +572,12 @@ void print_rr_section(dns_rr * next, char * name, char sep) {
         skip = 0;
         for (i=0; i < EXCLUDES && skip == 0; i++) 
             if (next->type == EXCLUDED[i]) skip = 1;
-        
-        if (!skip)  
-            printf("%c%s %d %d %s", sep, next->name, next->type, next->cls,
-                                    next->data);
+        if (!skip) {
+            char *name, *data;
+            name = next->name == NULL ? "*empty*" : next->name;
+            data = next->data == NULL ? "*empty*" : next->data;
+            printf("%c%s %d %d %s", sep, name, next->type, next->cls, data);
+        }
         next = next->next; 
     }
 }
@@ -566,12 +610,11 @@ void handler(u_char * args, const struct pcap_pkthdr *header,
         printf("Unsupported Protocol(%d)\n", ipv4.proto);
         return;
     }
-    
+   
     pos = parse_udp(pos, header, packet, &udp);
     if ( pos == 0 ) return;
 
     pos = parse_dns(pos, header, packet, &dns);
-    if ( pos == 0 ) return;
 
     if (PRETTY_DATE) {
         struct tm *time;
@@ -585,7 +628,7 @@ void handler(u_char * args, const struct pcap_pkthdr *header,
    
     if (MULTI_SEP == NULL) {
         sep = '\t';
-        record_sep = "\n";
+        record_sep = "";
     } else {
         sep = '\n';
         record_sep = MULTI_SEP;
@@ -602,6 +645,7 @@ void handler(u_char * args, const struct pcap_pkthdr *header,
         dnslength = 0;
     }
     
+    fflush(stdout);
     printf("%s,%d.%d.%d.%d,%d.%d.%d.%d,%d,%c,%c,%s", date,  
            ipv4.srcip[0], ipv4.srcip[1], ipv4.srcip[2], ipv4.srcip[3],
            ipv4.dstip[0], ipv4.dstip[1], ipv4.dstip[2], ipv4.dstip[3],
@@ -612,12 +656,11 @@ void handler(u_char * args, const struct pcap_pkthdr *header,
         printf("%c%s %d %d", sep, qnext->name, qnext->type, qnext->cls);
         qnext = qnext->next; 
     }
-
     print_rr_section(dns.answers, "Answers", sep);
     if (NS_ENABLED) print_rr_section(dns.name_servers, "Name Servers", sep);
     if (AD_ENABLED) print_rr_section(dns.additional, "Additional", sep);
     printf("%c%s\n", sep, record_sep);
-
+    
     dns_question_free(dns.queries);
     dns_rr_free(dns.answers);
     dns_rr_free(dns.name_servers);

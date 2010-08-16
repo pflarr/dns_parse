@@ -48,9 +48,13 @@ char * escape_data(const u_char * packet, bpf_u_int32 start, bpf_u_int32 end) {
 char * read_rr_name(const u_char * packet, bpf_u_int32 * packet_p, 
                     bpf_u_int32 id_pos, bpf_u_int32 len) {
     
+    fprintf(stderr, "Reading rr name\n");
+    fflush(stderr);
+
     bpf_u_int32 i, next, pos=*packet_p;
     bpf_u_int32 end_pos = 0;
     bpf_u_int32 name_len=0;
+    bpf_u_int32 steps = 0;
     char * name;
     int bc = 0;
     unsigned char badchars[2000];
@@ -59,9 +63,15 @@ char * read_rr_name(const u_char * packet, bpf_u_int32 * packet_p,
     // each character to look for values we can't print in order to allocate
     // extra space for escaping them.  'next' is the next position to look
     // for a compression jump or name end.
+    // It's possible that there are endless loops in the name. Our protection
+    // against this is to make sure we don't read more bytes in this process
+    // than twice the length of the data.  Names that take that many steps to 
+    // read in should be impossible.
     next = pos;
-    while (pos < len && !(next == pos && packet[pos] == 0)) {
+    while (pos < len && !(next == pos && packet[pos] == 0)
+           && steps < len*2) {
         unsigned char c = packet[pos];
+        steps++;
         if (next == pos) {
             // Handle message compression.  
             // If the length byte starts with the bits 11, then the rest of
@@ -84,10 +94,14 @@ char * read_rr_name(const u_char * packet, bpf_u_int32 * packet_p,
         }
     }
     if (end_pos == 0) end_pos = pos;
-    
-    name_len++;
+  
+    // Due to the nature of DNS name compression, it's possible to get a
+    // name that is infinitely long. Return an error in that case.
+    // We use the len of the packet as the limit, because it shouldn't 
+    // be possible for the name to be that long.
+    if (steps >= 2*len || pos >= len) return NULL;
 
-    if (pos >= len) return 0;
+    name_len++;
 
     name = (char *)malloc(sizeof(char) * name_len);
     pos = *packet_p;
@@ -134,6 +148,7 @@ char * read_rr_name(const u_char * packet, bpf_u_int32 * packet_p,
     name[i] = 0;
 
     *packet_p = end_pos + 1;
+
     return name;
 }
 

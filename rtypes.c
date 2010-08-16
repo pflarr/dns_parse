@@ -41,11 +41,11 @@ char * A(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 i,
 "A DNS like name. This format is used for many record types."
 char * domain_name(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
                    u_short rdlength, bpf_u_int32 plen) {
-    // We use a dummy position variable because we already know the length of
-    // the data and we don't need read_rr_name to tell us.
-    bpf_u_int32 dummy_pos = pos;
-    // Fake the end of packet length
-    return read_rr_name(packet, &dummy_pos, id_pos, plen);
+    char * name = read_rr_name(packet, &pos, id_pos, plen);
+    if (name == NULL) 
+        name = mk_error("Bad DNS name: ", packet, pos, rdlength);
+
+    return name;
 }
 
 #define SOA_DOC "Start of Authority format\n"\
@@ -93,6 +93,8 @@ char * mx(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
 
     pos = pos + 2;
     name = read_rr_name(packet, &pos, id_pos, plen);
+    if (name == NULL) 
+        return mk_error("Bad MX", packet, pos, rdlength);
 
     buffer = malloc(sizeof(char)*(20 + strlen(name)));
     sprintf(buffer, "pref: %d, %s", pref, name);
@@ -135,6 +137,8 @@ char * srv(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
     pos = pos + 6;
     // Don't read beyond the end of the rr.
     target = read_rr_name(packet, &pos, id_pos, pos+rdlength-6);
+    if (target == NULL) 
+        return mk_error("Bad SRV", packet, pos, rdlength);
     
     buffer = malloc(sizeof(char) * ((3*5+1) + strlen(target)));
     sprintf(buffer, "%d,%d,%d %s", priority, weight, port, target);
@@ -207,6 +211,9 @@ char * rrsig(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
               (packet[pos+2] << 8) + packet[pos+3];
     pos = pos + 6;
     signer = read_rr_name(packet, &pos, id_pos, o_pos+rdlength);
+    if (signer == NULL) 
+        return mk_error("Bad Signer name", packet, pos, rdlength);
+        
     signature = b64encode(packet, pos, o_pos+rdlength-pos);
     buffer = malloc(sizeof(char) * (2*5 + // 2 16 bit ints
                                     3*10 + // 3 32 bit ints
@@ -230,6 +237,9 @@ char * nsec(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
     char *buffer, *domain, *bitmap;
 
     domain = read_rr_name(packet, &pos, id_pos, pos+rdlength);
+    if (domain == NULL) 
+        return mk_error("Bad NSEC domain", packet, pos, rdlength);
+    
     bitmap = escape_data(packet, pos, pos+rdlength);
     buffer = malloc(sizeof(char) * (strlen(domain)+strlen(bitmap)+2));
     sprintf(buffer, "%s,%s", domain, bitmap);
