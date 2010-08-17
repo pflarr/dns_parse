@@ -48,9 +48,6 @@ char * escape_data(const u_char * packet, bpf_u_int32 start, bpf_u_int32 end) {
 char * read_rr_name(const u_char * packet, bpf_u_int32 * packet_p, 
                     bpf_u_int32 id_pos, bpf_u_int32 len) {
     
-    fprintf(stderr, "Reading rr name\n");
-    fflush(stderr);
-
     bpf_u_int32 i, next, pos=*packet_p;
     bpf_u_int32 end_pos = 0;
     bpf_u_int32 name_len=0;
