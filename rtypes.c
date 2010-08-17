@@ -13,9 +13,9 @@ rr_parser_container default_rr_parser = {0, 0, escape, "UNDEFINED", NULL, 0};
 char * mk_error(const char * msg, const u_char * packet, bpf_u_int32 pos,
                 u_short rdlength) {
     char * tmp = escape_data(packet, pos, pos+rdlength);
-    size_t len = strlen(tmp) + strlen(msg);
-    char * buffer = malloc(sizeof(char)*len + 1);
-    sprintf(buffer, "%s - %s", msg, tmp);
+    size_t len = strlen(tmp) + strlen(msg) + 1;
+    char * buffer = malloc(sizeof(char)*len);
+    sprintf(buffer, "%s%s", msg, tmp);
     free(tmp);
     return buffer;
 }
@@ -28,7 +28,7 @@ char * A(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 i,
 
     if (rdlength != 4) {
         free(data);
-        return mk_error("Bad A record", packet, pos, rdlength);
+        return mk_error("Bad A record: ", packet, pos, rdlength);
     }
     
     sprintf(data, "%d.%d.%d.%d", packet[pos], packet[pos+1],
@@ -60,9 +60,9 @@ char * soa(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
                           "refresh: %d, retry: %d, expire: %d, min: %d";
 
     mname = read_rr_name(packet, &pos, id_pos, plen);
-    if (mname == NULL) return mk_error("Bad SOA", packet, pos, rdlength);
+    if (mname == NULL) return mk_error("Bad SOA: ", packet, pos, rdlength);
     rname = read_rr_name(packet, &pos, id_pos, plen);
-    if (rname == NULL) return mk_error("Bad SOA", packet, pos, rdlength);
+    if (rname == NULL) return mk_error("Bad SOA: ", packet, pos, rdlength);
 
     serial = (packet[pos] << 8) + packet[pos+1];
     refresh = (packet[pos+2] << 8) + packet[pos+3];
@@ -90,14 +90,15 @@ char * mx(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
     u_short pref = (packet[pos] << 8) + packet[pos+1];
     char * name;
     char * buffer;
+    bpf_u_int32 spos = pos;
 
     pos = pos + 2;
     name = read_rr_name(packet, &pos, id_pos, plen);
     if (name == NULL) 
-        return mk_error("Bad MX", packet, pos, rdlength);
+        return mk_error("Bad MX: ", packet, spos, rdlength);
 
-    buffer = malloc(sizeof(char)*(20 + strlen(name)));
-    sprintf(buffer, "pref: %d, %s", pref, name);
+    buffer = malloc(sizeof(char)*(5 + 1 + strlen(name) + 1));
+    sprintf(buffer, "%d,%s", pref, name);
     free(name);
     return buffer;
 }
@@ -116,7 +117,7 @@ char * opts(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
     const char * base_format = "size:%d,rcode:0x%02x%02x%02x%02x,%s";
     char *rdata = escape_data(packet, pos+6, pos + 6 + rdlength);
 
-    buffer = malloc(sizeof(char) * (strlen(base_format) - 10 + 5 + 
+    buffer = malloc(sizeof(char) * (strlen(base_format) - 20 + 5 + 8 +
                                     strlen(rdata) + 1)); 
     sprintf(buffer, base_format, payload_size, packet[2], packet[3],
                                  packet[4], packet[5], rdata);

@@ -365,7 +365,7 @@ bpf_u_int32 parse_questions(bpf_u_int32 pos, bpf_u_int32 id_pos,
 
         current->name = read_rr_name(packet, &pos, id_pos, header->len);
         if (current->name == NULL || (pos + 2) >= header->len) {
-            printf("DNS question error\n");
+            fprintf(stderr, "DNS question error\n");
             char * buffer = escape_data(packet, start_pos, header->len);
             const char * msg = "Bad DNS question: ";
             current->name = malloc(sizeof(char) * (strlen(buffer) +
@@ -458,7 +458,7 @@ bpf_u_int32 parse_rr(bpf_u_int32 pos, bpf_u_int32 id_pos,
         const char * msg = "Truncated rr: ";
         rr->data = escape_data(packet, rr_start, header->len);
         buffer = malloc(sizeof(char) * (strlen(rr->data) + strlen(msg) + 1));
-        sprintf(buffer, "%s%s", msg, buffer);
+        sprintf(buffer, "%s%s", msg, rr->data);
         free(rr->data);
         rr->data = buffer;
         return 0;
@@ -574,8 +574,8 @@ void print_rr_section(dns_rr * next, char * name, char sep) {
             if (next->type == EXCLUDED[i]) skip = 1;
         if (!skip) {
             char *name, *data;
-            name = next->name == NULL ? "*empty*" : next->name;
-            data = next->data == NULL ? "*empty*" : next->data;
+            name = (next->name == NULL) ? "*empty*" : next->name;
+            data = (next->data == NULL) ? "*empty*" : next->data;
             printf("%c%s %d %d %s", sep, name, next->type, next->cls, data);
         }
         next = next->next; 
@@ -665,4 +665,5 @@ void handler(u_char * args, const struct pcap_pkthdr *header,
     dns_rr_free(dns.answers);
     dns_rr_free(dns.name_servers);
     dns_rr_free(dns.additional);
+    fflush(stdout); fflush(stderr);
 }
