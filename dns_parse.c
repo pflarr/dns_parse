@@ -649,7 +649,7 @@ void handler(u_char * args, const struct pcap_pkthdr *header,
     printf("%s,%d.%d.%d.%d,%d.%d.%d.%d,%d,%c,%c,%s", date,  
            ipv4.srcip[0], ipv4.srcip[1], ipv4.srcip[2], ipv4.srcip[3],
            ipv4.dstip[0], ipv4.dstip[1], ipv4.dstip[2], ipv4.dstip[3],
-           dnslength, proto, dns.qr ? 'r':'q', dns.AA?"AA":"");
+           dnslength, proto, dns.qr ? 'r':'q', dns.AA?"AA":"NA");
     qnext = dns.queries;
     if (qnext != NULL) printf("%cQueries", sep);
     while (qnext != NULL) {
