@@ -4,10 +4,15 @@ install:
 	mkdir -p ${DESTDIR}/usr/local/sbin/
 	cp bin/dns_parse ${DESTDIR}/usr/local/sbin/
 
-src_tar:
+tar:
+	if [ -z ${version} ]; then \
+		echo "set 'version' env variable first."; \
+		false;\
+	fi;
 	mkdir dns_parse-${version}
 	cp *.c *.h Makefile dns_parse-${version}/
 	tar -czf dns_parse-${version}.tar.gz dns_parse-${version}
+	rm -rf dns_parse-${version}
 
 bin/dns_parse: dns_parse.c rtypes.o strutils.o
 	mkdir -p bin
