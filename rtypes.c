@@ -8,7 +8,9 @@
 // the bottom of this file.
 
 // This is used when a parser isn't defined for a given class, rtypes.
-rr_parser_container default_rr_parser = {0, 0, escape, "UNDEFINED", NULL, 0};
+// Note: The NULL in the name field is important, and used to distinguish
+//       this from the rest of the parser containers.
+rr_parser_container default_rr_parser = {0, 0, escape, NULL, NULL, 0};
 
 char * mk_error(const char * msg, const u_char * packet, bpf_u_int32 pos,
                 u_short rdlength) {

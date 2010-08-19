@@ -25,6 +25,7 @@ int AD_ENABLED = 0;
 #include <string.h>
 int NS_ENABLED = 0;
 int PRETTY_DATE = 0;
+int PRINT_RR_NAME = 0;
 int MISSING_TYPE_WARNINGS = 0;
 
 void handler(u_char *, const struct pcap_pkthdr *, const u_char *);
@@ -53,6 +54,7 @@ typedef struct dns_rr {
     char * name;
     u_short type;
     u_short cls;
+    const char * rr_name;
     u_short ttl;
     u_short rdlength;
     u_short data_len;
@@ -88,7 +90,7 @@ int main(int argc, char **argv) {
     int print_type_freq = 0;
     int arg_failure = 0;
 
-    const char * OPTIONS = "dfhm:Mnutx:";
+    const char * OPTIONS = "dfhm:Mnurtx:";
 
     c = getopt(argc, argv, OPTIONS);
     while (c != -1) {
@@ -107,6 +109,9 @@ int main(int argc, char **argv) {
                 break;
             case 'n':
                 NS_ENABLED = 1;
+                break;
+            case 'r':
+                PRINT_RR_NAME = 1;
                 break;
             case 't':
                 PRETTY_DATE = 1; 
@@ -178,6 +183,16 @@ int main(int argc, char **argv) {
         "  proto - udp (u) or tcp(t)\n"
         "  query/response - is it a query(q) or response(r)\n"
         "  authoritative - marked with AA if authoritative\n\n"
+        "The resource records are printed after these fields, separated by\n"
+        "a tab (a newline in multiline mode). Each section of records\n"
+        "is preceeded by a separate record containing only the section name:\n"
+        "(Questions, Answers, Name Servers, Additional)\n"
+        "By default the resource record format is:\n"
+        "<name> <type> <class> <rdata>\n\n"
+        "Query records are the same, except without the <rdata>\n"
+        "The rdata is parsed by a custom parser that depends on the\n"
+        "record type and class. Use the -f option to get a list of\n"
+        "the supported record types and documentation on the parsers.\n\n"
         "Args:\n"
         "<pcapfile> - The pcapfile to parse. Use a '-' for stdin\n"
         "-d\n"
@@ -196,6 +211,11 @@ int main(int argc, char **argv) {
         "-M \n"
         "   Print a message for each occurance of a missing class,type\n"
         "   parser.\n"
+        "-r \n"
+        "   Changes the resource record format to: \n"
+        "   <name> <rr_type_name> <rdata>\n"
+        "   If the record type isn't known, 'UNKNOWN(<cls>,<type>)' is given\n"
+        "   The query record format is the similar, but missing the rdata.\n"
         "-t \n"
         "   Print the time/date as in Y/M/D H:M:S format.\n"
         "   The time will be in the local timezone.\n"
@@ -416,6 +436,7 @@ bpf_u_int32 parse_rr(bpf_u_int32 pos, bpf_u_int32 id_pos,
         rr->name = malloc(sizeof(char) * (strlen(msg) + 1));
         sprintf(rr->name, "%s", "Bad rr name");
         rr->type = 0;
+        rr->rr_name = NULL;
         rr->cls = 0;
         rr->ttl = 0;
         rr->data = escape_data(packet, pos, header->len);
@@ -430,7 +451,8 @@ bpf_u_int32 parse_rr(bpf_u_int32 pos, bpf_u_int32 id_pos,
     switch (rr->type) {
         case 41:
             rr->cls = 0;
-            rr->ttl = 0; 
+            rr->ttl = 0;
+            rr->rr_name = "OPTS";
             parser = &opts_cont;
             // We'll leave the parsing of the special EDNS opt fields to
             // our opt rdata parser.  
@@ -442,6 +464,7 @@ bpf_u_int32 parse_rr(bpf_u_int32 pos, bpf_u_int32 id_pos,
             for (i=0; i<4; i++)
                 rr->ttl = (rr->ttl << 8) + packet[pos+4+i];
             parser = find_parser(rr->cls, rr->type);
+            rr->rr_name = parser->name;
             pos = pos + 10;
     }
 
@@ -576,7 +599,15 @@ void print_rr_section(dns_rr * next, char * name, char sep) {
             char *name, *data;
             name = (next->name == NULL) ? "*empty*" : next->name;
             data = (next->data == NULL) ? "*empty*" : next->data;
-            printf("%c%s %d %d %s", sep, name, next->type, next->cls, data);
+            if (PRINT_RR_NAME) { 
+                if (next->rr_name == NULL) 
+                    printf("%c%s UNKNOWN(%d,%d) %s", sep, name, next->type,
+                                                     next->cls, data);
+                else
+                    printf("%c%s %s %s", sep, name, next->rr_name, data);
+            } else
+                printf("%c%s %d %d %s", sep, name, next->type, 
+                                        next->cls, data);
         }
         next = next->next; 
     }
@@ -653,7 +684,16 @@ void handler(u_char * args, const struct pcap_pkthdr *header,
     qnext = dns.queries;
     if (qnext != NULL) printf("%cQueries", sep);
     while (qnext != NULL) {
-        printf("%c%s %d %d", sep, qnext->name, qnext->type, qnext->cls);
+        if (PRINT_RR_NAME) {
+            struct rr_parser_container * parser; 
+            parser = find_parser(qnext->cls, qnext->type);
+            if (parser->name == NULL) 
+                printf("%c%s UNKNOWN(%d,%d)", sep, qnext->name, parser->name,
+                                              qnext->type, qnext->cls);
+            else 
+                printf("%c%s %s", sep, qnext->name, parser->name);
+        } else
+            printf("%c%s %d %d", sep, qnext->name, qnext->type, qnext->cls);
         qnext = qnext->next; 
     }
     print_rr_section(dns.answers, "Answers", sep);
