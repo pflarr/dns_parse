@@ -43,6 +43,24 @@ typedef struct udp_info {
     u_short length;
 } udp_info;
 
+typedef struct tcp_info {
+    struct timeval when;
+    bpf_u_int32 srcip;
+    bpf_u_int32 dstip;
+    u_short srcport;
+    u_short dstport;
+    bpf_u_int32 sequence;
+    bpf_u_int32 ack_num;
+    bpf_u_int32 len;
+    u_char * data;
+    struct tcp_info * child;
+    struct tcp_info * next;
+    struct tcp_info * prev;
+} tcp_info;
+
+tcp_info * TCP_STACK_HEAD = NULL;
+tcp_info * TCP_STACK_TAIL = NULL;
+
 typedef struct dns_question {
     char * name;
     u_short type;
@@ -322,7 +340,7 @@ bpf_u_int32 parse_ipv4(bpf_u_int32 pos, const struct pcap_pkthdr *header,
     
     version = packet[pos] >> 4;
     h_len = packet[pos] & 0x0f;
-    ipv4->length = (packet[pos+2] << 8) + packet[pos+3];
+    ipv4->length = (packet[pos+2] << 8) + packet[pos+3] - h_len*4;
     ipv4->proto = packet[pos+9];
 
     for (i=0; i<4; i++) {
@@ -361,12 +379,140 @@ bpf_u_int32 parse_udp(bpf_u_int32 pos, const struct pcap_pkthdr *header,
     #ifdef VERBOSE
     #ifdef SHOW_RAW
     printf("udp\n");
-    print_packet(header, packet, pos, pos + 8, 4);
+    print_packet(header, packet, pos, pos, 4);
     #endif
-    printf("srcport: %d, dstport: %d, len: %d\n", udp->srcport, udp->dstport, 
-                                                  udp->length);
+    print_packet(header, packet, pos, pos + 8, 4); #endif printf("srcport: %d, dstport: %d, len: %d\n", udp->srcport, udp->dstport, udp->length);
     #endif
     return pos + 8;
+}
+
+u_short tcp_checksum(struct ipv4_info *ip, const u_char *packet, 
+                     bpf_u_int32 pos, bpf_u_int32 length) {
+    unsigned int sum;
+    bpf_u_int32 len;
+    unsigned int * words;
+    unsigned int i;
+  
+
+    length = pos + ip->length;
+    len = (length - pos)/2 + 6;
+    if ((length - pos) % 2) len++;
+
+    words = malloc(sizeof(unsigned int) * len);
+
+    words[0] = (unsigned int)(ip->srcip[0] << 8) + ip->srcip[1];
+    words[1] = (unsigned int)(ip->srcip[2] << 8) + ip->srcip[3]; 
+    words[2] = (unsigned int)(ip->dstip[0] << 8) + ip->dstip[1];
+    words[3] = (unsigned int)(ip->dstip[2] << 8) + ip->dstip[3];
+    words[4] = ip->proto;
+    words[5] = ip->length;
+ 
+    i = 6;
+    while (pos + 1 < length) {
+        words[i] = (packet[pos] << 8) + packet[pos+1];
+        i++;
+        pos += 2;
+    }
+
+    if (pos < length) {
+        words[i] = (packet[pos] << 8);
+        i++;
+    }
+
+    sum = 0;
+    for (i = 0; i < len; i++) {
+        sum += words[i];
+    }
+
+    free(words);
+    sum = (sum & 0xffff) + (sum >> 16);
+    sum += sum >> 16;
+    return ~sum;
+}
+
+u_char * parse_tcp(bpf_u_int32 pos, const struct pcap_pkthdr *header, 
+                   const u_char *packet, ipv4_info *ip, udp_info * udp) {
+    struct tcp_info * tcp = malloc(sizeof(tcp_info));
+    struct tcp_info * next;
+    int i;
+    unsigned int offset;
+    bpf_u_int32 data_len;
+    u_short checksum;
+    u_short actual_checksum;
+
+    tcp->srcip = *((bpf_u_int32 *)ip->srcip);
+    tcp->dstip = *((bpf_u_int32 *)ip->dstip);
+    tcp->srcport = (packet[pos] << 8) + packet[pos+1];
+    tcp->dstport = (packet[pos+2] << 8) + packet[pos+3];
+    tcp->control = packet[pos+13]; 
+    tcp->sequence = 0;
+    tcp->ack_num = 0;
+    for (i = 0; i < 4; i++) {
+        tcp->sequence = (tcp->sequence << 8) + packet[pos + 4 + i];
+        tcp->ack_num = (tcp->ack_num << 8) + packet[pos + 8 + i];
+    }
+    offset = packet[pos + 12] >> 4;
+
+    if ((pos + offset*4) > header->len) {
+        fprintf(stderr, "Truncated TCP packet: %d, %d\n", offset, header->len);
+        free(tcp);
+        return NULL;
+    }
+    tcp->len = header->len - pos;
+  
+    // Ignore packets with a bad checksum
+    if (tcp_checksum(ip, packet, pos, header->len) != 0)
+        return NULL;
+
+    tcp->data_len = ip->length - offset; 
+    if (tcp->data_len > 0) {
+        tcp->data = malloc(sizeof(char) * (tcp->data_len));
+        memcpy(tcp->data, &packet[pos + offset], tcp->data_len);
+    } else
+        tcp->data = NULL;
+
+    next = TCP_STACK_HEAD;
+    while (next) {
+        if ( next->srcip == tcp->srcip &&
+             next->dstip == tcp->dstip &&
+             next->srcport == tcp->srcport &&
+             next->dstport == tcp->dstport) {
+            tcp->parent = next;
+            tcp->next = next->next;
+            tcp->prev = next->prev;
+            if (tcp->prev) 
+                tcp->prev->next = tcp;
+            else
+                TCP_STACK_HEAD = tcp;
+            if (tcp->next)
+                tcp->next->prev = tcp;
+            else
+                TCP_STACK_TAIL = tcp;
+            next->next = NULL;
+            next->prev = NULL;
+            next = NULL;
+            found = 1;
+        }
+    }
+     
+    if (!found) {
+        next ->
+
+    if (tcp->control & TCP_FIN) {
+        next = tcp;
+        while (next) {
+             
+    
+                bpf_u_int32 total_data;
+                int seq_ok = 1;
+                int next_seq;
+                while (asnext) {
+                    if asnext->
+
+                    
+
+
+    return NULL;
 }
 
 bpf_u_int32 parse_questions(bpf_u_int32 pos, bpf_u_int32 id_pos, 
@@ -637,14 +783,24 @@ void handler(u_char * args, const struct pcap_pkthdr *header,
     if (pos == 0) return;
     pos = parse_ipv4(pos, header, packet, &ipv4);
     if ( pos == 0) return;
-    if (ipv4.proto != 17) {
-        printf("Unsupported Protocol(%d)\n", ipv4.proto);
+    if (ipv4.proto == 17) {
+        pos = parse_udp(pos, header, packet, &udp);
+        if ( pos == 0 ) return;
+    } else if (ipv4.proto == 6) {
+        u_char * data;
+        data = parse_tcp(pos, header, packet, &ipv4, &udp);
+        // The tcp packet was absorbed or erroneous, don't do anything else.
+        if (data == NULL) return;
+        // Forge the packet, 
+        packet = (const u_char *) data;
+        pos = 0;
+        // The header length and time are changed in parse_tcp
+        // A fake udp object is also constructed.
+    } else {
+        fprintf(stderr, "Unsupported Protocol(%d)\n", ipv4.proto);
         return;
     }
    
-    pos = parse_udp(pos, header, packet, &udp);
-    if ( pos == 0 ) return;
-
     pos = parse_dns(pos, header, packet, &dns);
 
     if (PRETTY_DATE) {
