@@ -3,6 +3,8 @@ build: bin/dns_parse
 install:
 	mkdir -p ${DESTDIR}/usr/local/sbin/
 	cp bin/dns_parse ${DESTDIR}/usr/local/sbin/
+	cp dnscapture/dnscapture ${DESTDIR}/etc/init.d/
+	cp dnscapture/dnscapture.conf ${DESTDIR}/etc/
 
 tar:
 	if [ -z ${version} ]; then \
