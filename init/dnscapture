@@ -1,6 +1,8 @@
 #!/bin/sh
 #
 # Init file for dns capture daemon (just a tcpdump process...)
+# This was written for RHEL 5, and will probably need to be modified
+# for other systems.
 #
 # chkconfig: 2345 50 50
 # description: DNS capture daemon

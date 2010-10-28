@@ -1,5 +1,5 @@
 Name:           dns_parse
-Version:        0.1.8
+Version:        0.2.0
 Release:        4%{?dist}
 Summary:        Converts pcap files of DNS data into something more manageable.
 Source:         dns_parse-%{version}.tar.gz
@@ -37,6 +37,9 @@ rm -rf $RPM_BUILD_ROOT
 /etc/dnscapture
 
 %changelog
+* Thu Oct 28 2010 Paul Ferrell <pferrell@lanl.gov> - 0.2.0
+- Added a couple of useful scripts to simplify dns capture and parsing, and their config files.
+
 * Tue Aug 17 2010 Paul Ferrell <pferrell@lanl.gov> - 0.1.8
 - Multi bug fixes, improved error handling, fixed some memory issues.
 
