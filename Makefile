@@ -2,8 +2,10 @@ build: bin/dns_parse
 
 install:
 	mkdir -p ${DESTDIR}/usr/local/sbin/
-	cp bin/dns_parse ${DESTDIR}/usr/local/sbin/
-
+	cp bin/* ${DESTDIR}/usr/local/sbin/
+	cp init/dnscapture ${DESTDIR}/etc/init.d/
+	cp etc/* ${DESTDIR}/etc/
+	
 tar:
 	if [ -z ${version} ]; then \
 		echo "set 'version' env variable first."; \
@@ -26,7 +28,7 @@ strutils.o: strutils.h strutils.c
 
 clean:
 	rm -f *.o
-	rm -rf bin dns_parse-*
+	rm -rf bin/dns_parse dns_parse-*
 
 test_strutils: strutils.c
 	mkdir bin

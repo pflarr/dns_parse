@@ -1,0 +1,49 @@
+#!/usr/bin/python
+import glob
+import fcntl
+import os
+import subprocess
+
+import sys; sys.path.append('/etc/')
+# All the GLOBAL constants come from the config here
+from dns_parse_cfg import *
+
+for network in NETWORKS:
+    state_fn = os.path.join(STATE_DIR, network)
+    if os.path.exists(state_fn):
+        statefile = open(state_fn)
+        last = statefile.read()
+    else:
+        statefile = open(state_fn, 'a')
+        last = None
+
+    try:
+        fcntl.flock(statefile, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        path = os.path.join(PCAP_DIR, network) + '.*.gz'
+        files = glob.glob(path)
+        files.sort(reverse=True)
+        if not files:
+            continue
+        
+        if (last not in files):
+            i = 0
+        else:
+            i = files.index(last) - 1
+
+        while i >= 0:
+            path = os.path.join(PCAP_DIR, files[i])
+            cmd = 'gunzip -c %s | /usr/local/sbin/dns_parse %s - >> %s 2>> %s'%\
+                  (path, OPTIONS, LOG_FILE, ERROR_LOG)
+            subprocess.call(cmd, shell=True)
+            i = i - 1
+
+        if not os.path.exists(STATE_DIR):
+            subprocess.call(['mkdir', '-p', STATE_DIR])
+        wstatefile = open(state_fn, 'w')
+        wstatefile.write(files[0])
+        wstatefile.close()
+    finally:
+        fcntl.flock(statefile, fcntl.LOCK_UN)
+        statefile.close()
+
