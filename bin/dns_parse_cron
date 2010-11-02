@@ -1,15 +1,28 @@
 #!/usr/bin/python
+from ConfigParser import SafeConfigParser
 import glob
 import fcntl
 import os
 import subprocess
+import sys
 
-import sys; sys.path.append('/etc/')
-# All the GLOBAL constants come from the config here
-from dns_parse_cfg import *
+CFG_PATH = '/etc/dns_parse.cfg'
+CFG_OPTIONS = ['PCAP_DIR', 'NETWORKS', 'STATE_DIR', 'OPTIONS', 
+               'LOG_FILE', 'ERROR_LOG']
+parser = SafeConfigParser()
+parser.read(CFG_PATH)
 
-for network in NETWORKS:
-    state_fn = os.path.join(STATE_DIR, network)
+options = {'OPTIONS':''}
+for option in CFG_OPTIONS:
+    if parser.has_option('DEFAULT', option):
+        options[option] = parser.get('DEFAULT', option)
+
+    if option not in options:
+        print "You must set a value for option '%s' in %s" % (option, CFG_PATH)
+        sys.exit(-1)
+
+for network in options['NETWORK']:
+    state_fn = os.path.join(options['STATE_DIR'], network)
     if os.path.exists(state_fn):
         statefile = open(state_fn)
         last = statefile.read()
@@ -20,7 +33,7 @@ for network in NETWORKS:
     try:
         fcntl.flock(statefile, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
-        path = os.path.join(PCAP_DIR, network) + '.*.gz'
+        path = os.path.join(options['PCAP_DIR'], network) + '.*.gz'
         files = glob.glob(path)
         files.sort(reverse=True)
         if not files:
@@ -34,12 +47,13 @@ for network in NETWORKS:
         while i >= 0:
             path = os.path.join(PCAP_DIR, files[i])
             cmd = 'gunzip -c %s | /usr/local/sbin/dns_parse %s - >> %s 2>> %s'%\
-                  (path, OPTIONS, LOG_FILE, ERROR_LOG)
+                  (path, options['OPTIONS'], options['LOG_FILE'], 
+                   options['ERROR_LOG'])
             subprocess.call(cmd, shell=True)
             i = i - 1
 
-        if not os.path.exists(STATE_DIR):
-            subprocess.call(['mkdir', '-p', STATE_DIR])
+        if not os.path.exists(options['STATE_DIR']):
+            subprocess.call(['mkdir', '-p', options['STATE_DIR']])
         wstatefile = open(state_fn, 'w')
         wstatefile.write(files[0])
         wstatefile.close()

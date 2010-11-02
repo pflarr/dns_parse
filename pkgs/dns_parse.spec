@@ -33,8 +33,10 @@ rm -rf $RPM_BUILD_ROOT
 %files
 %defattr(-,root,root,-)
 /usr/local/sbin/dns_parse
+/usr/local/sbin/dns_parse_cron
 /etc/init.d/dnscapture
-/etc/dnscapture
+/etc/dnscapture.conf
+/etc/dns_parse.cfg
 
 %changelog
 * Thu Oct 28 2010 Paul Ferrell <pferrell@lanl.gov> - 0.2.0

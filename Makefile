@@ -3,16 +3,17 @@ build: bin/dns_parse
 install:
 	mkdir -p ${DESTDIR}/usr/local/sbin/
 	cp bin/* ${DESTDIR}/usr/local/sbin/
+	mkdir -p ${DESTDIR}/etc/init.d/
 	cp init/dnscapture ${DESTDIR}/etc/init.d/
 	cp etc/* ${DESTDIR}/etc/
 	
-tar:
+tar: clean
 	if [ -z ${version} ]; then \
 		echo "set 'version' env variable first."; \
 		false;\
 	fi;
 	mkdir dns_parse-${version}
-	cp *.c *.h Makefile dns_parse-${version}/
+	cp -r *.c *.h bin etc init Makefile dns_parse-${version}/
 	tar -czf dns_parse-${version}.tar.gz dns_parse-${version}
 	rm -rf dns_parse-${version}
 
