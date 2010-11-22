@@ -21,7 +21,10 @@ for option in CFG_OPTIONS:
         print "You must set a value for option '%s' in %s" % (option, CFG_PATH)
         sys.exit(-1)
 
-for network in options['NETWORK']:
+for network in options['NETWORKS'].split():
+    network = network.strip()
+    if not network:
+        continue
     state_fn = os.path.join(options['STATE_DIR'], network)
     if os.path.exists(state_fn):
         statefile = open(state_fn)
@@ -46,7 +49,7 @@ for network in options['NETWORK']:
 
         while i >= 0:
             path = os.path.join(PCAP_DIR, files[i])
-            cmd = 'gunzip -c %s | /usr/local/sbin/dns_parse %s - >> %s 2>> %s'%\
+            cmd = '/usr/local/sbin/dns_parse %s %s >> %s 2>> %s'%\
                   (path, options['OPTIONS'], options['LOG_FILE'], 
                    options['ERROR_LOG'])
             subprocess.call(cmd, shell=True)

@@ -1,11 +1,12 @@
 Name:           dns_parse
-Version:        0.2.0
+Version:        0.2.1
 Release:        4%{?dist}
 Summary:        Converts pcap files of DNS data into something more manageable.
 Source:         dns_parse-%{version}.tar.gz
 Group:          Applications/Internet
 License:        GPLv2+
 BuildRoot:      %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
+Requires:       python
 
 BuildRequires:  gcc libpcap
 
@@ -15,6 +16,10 @@ of DNS data (currently UDP only) into a readable and easily parsable format.
 This data can then be easily fed into splunk or searched directly using grep.
 The raw files are actually slightly larger than the original pcap files, but
 compress much more readily.
+
+It also provides:
+  A configurable script for processing a directory of files using dns_parse.
+  A configurable init script for capturing the DNS data.
 
 %prep
 %setup 
@@ -36,7 +41,7 @@ rm -rf $RPM_BUILD_ROOT
 /usr/local/sbin/dns_parse_cron
 /etc/init.d/dnscapture
 /etc/dnscapture.conf
-/etc/dns_parse.cfg
+%config /etc/dns_parse.cfg
 
 %changelog
 * Thu Oct 28 2010 Paul Ferrell <pferrell@lanl.gov> - 0.2.0
