@@ -1,4 +1,10 @@
 #!/usr/bin/python
+
+# This script is meant to be set up as a cron job. It uses dns_parse to 
+# parse a set of gzipped pcaps and writes the result to a single log file.
+# There are several config file options available, see the file at CFG_PATH
+# below.
+
 from ConfigParser import SafeConfigParser
 import glob
 import fcntl
@@ -12,6 +18,7 @@ CFG_OPTIONS = ['PCAP_DIR', 'NETWORKS', 'STATE_DIR', 'OPTIONS',
 parser = SafeConfigParser()
 parser.read(CFG_PATH)
 
+# Grab all the config options
 options = {'OPTIONS':''}
 for option in CFG_OPTIONS:
     if parser.has_option('DEFAULT', option):
@@ -21,6 +28,7 @@ for option in CFG_OPTIONS:
         print "You must set a value for option '%s' in %s" % (option, CFG_PATH)
         sys.exit(-1)
 
+# Process the files for each network specified.
 for network in options['NETWORKS'].split():
     network = network.strip()
     if not network:
@@ -34,8 +42,13 @@ for network in options['NETWORKS'].split():
         last = None
 
     try:
+        # Only allow one copy of this script to run at a time.
         fcntl.flock(statefile, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
+        # It's assumed that we're using the COMPRESS option in the 
+        # capture script. It's also assumed that they're named such that
+        # a reversed sort will put them in order of most to least recent time
+        # wise.
         path = os.path.join(options['PCAP_DIR'], network) + '.*.gz'
         files = glob.glob(path)
         files.sort(reverse=True)
@@ -47,9 +60,11 @@ for network in options['NETWORKS'].split():
         else:
             i = files.index(last) - 1
 
-        while i >= 0:
-            path = os.path.join(PCAP_DIR, files[i])
-            cmd = '/usr/local/sbin/dns_parse %s %s >> %s 2>> %s'%\
+        # process every file except the most current (it's currently being
+        # written).
+        while i > 0:
+            path = os.path.join(options['PCAP_DIR'], files[i])
+            cmd = 'gunzip -c %s | /usr/local/sbin/dns_parse %s >> %s 2>> %s'%\
                   (path, options['OPTIONS'], options['LOG_FILE'], 
                    options['ERROR_LOG'])
             subprocess.call(cmd, shell=True)

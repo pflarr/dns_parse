@@ -13,7 +13,7 @@
 
 . /etc/init.d/functions
 PID_FILE=/var/run/dnscapture.pid
-CONFIG_FILE=/etc/dnscapture
+CONFIG_FILE=/etc/dnscapture.conf
 
 # These variables may all be overridden in the config file.
 TCPDUMP=/usr/sbin/tcpdump
@@ -27,6 +27,7 @@ FILE_TIME_LIMIT=""
 # The output filename. This can include strftime escapes
 FILE_NAME="dns.%F_%T.pcap"
 FILTER="ip and port 53"
+COMPRESS=""
 
 . $CONFIG_FILE
 
@@ -68,6 +69,10 @@ start()
 
     if [ -n "$OUTPUT_USER" ]; then
         OPTIONS="$OPTIONS -Z $OUTPUT_USER"
+    fi
+
+    if [ -n "$COMPRESS" ]; then
+        OPTIONS="$OPTIONS -z gzip"
     fi
 
     OPTIONS="$OPTIONS $FILTER"

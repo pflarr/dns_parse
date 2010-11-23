@@ -1,5 +1,5 @@
 Name:           dns_parse
-Version:        0.2.1
+Version:        0.2.4
 Release:        4%{?dist}
 Summary:        Converts pcap files of DNS data into something more manageable.
 Source:         dns_parse-%{version}.tar.gz
@@ -40,7 +40,7 @@ rm -rf $RPM_BUILD_ROOT
 /usr/local/sbin/dns_parse
 /usr/local/sbin/dns_parse_cron
 /etc/init.d/dnscapture
-/etc/dnscapture.conf
+%config /etc/dnscapture.conf
 %config /etc/dns_parse.cfg
 
 %changelog
