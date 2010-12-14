@@ -28,7 +28,7 @@ FACILITIES = {'kern': LOG_KERN, 'user': LOG_USER, 'daemon': LOG_DAEMON,
               'local6': LOG_LOCAL6, 'local7': LOG_LOCAL7}
 
 facility = None
-if (parser.has_option('DEFAULT', 'ERROR_LOG_FACILITY'):
+if parser.has_option('DEFAULT', 'ERROR_LOG_FACILITY'):
     facility = parser.get('DEFAULT', 'ERROR_LOG_FACILITY')
 
 if facility in FACILITIES:
@@ -89,7 +89,7 @@ for network in options['NETWORKS'].split():
         # process every file except the most current (it's currently being
         # written).
         success = True
-        while i > 1:
+        while i > 0:
             path = os.path.join(options['PCAP_DIR'], files[i])
             cmd = 'gunzip -c %s | /usr/local/sbin/dns_parse %s - >> %s 2> %s'%\
                   (path, options['OPTIONS'], options['LOG_FILE'], errtmp)
