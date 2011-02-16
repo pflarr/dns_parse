@@ -19,7 +19,7 @@ tar: clean
 
 bin/dns_parse: dns_parse.c rtypes.o strutils.o
 	mkdir -p bin
-	gcc -g -lpcap rtypes.o strutils.o -o bin/dns_parse dns_parse.c
+	gcc -lpcap rtypes.o strutils.o -o bin/dns_parse dns_parse.c
 
 rtypes.o: rtypes.c rtypes.h
 	gcc -g -c rtypes.c
