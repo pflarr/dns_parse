@@ -390,5 +390,5 @@ void print_parser_usage() {
         fprintf(stderr, "  %s - %llu\n", pc.name, pc.count);
     }
 
-    fprintf(stderr, "  undefined parser - %d\n", default_rr_parser.count);
+    fprintf(stderr, "  undefined parser - %llu\n", default_rr_parser.count);
 }
