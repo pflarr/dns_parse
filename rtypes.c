@@ -111,7 +111,7 @@ char * mx(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
 "The size and extended rcode are printed, but the dynamic fields are \n"\
 "simply escaped. Note that the associated format function is non-standard,\n"\
 "as EDNS records modify the basic resourse record protocol (there is no \n"\
-"class field, for instance. RFC 2671""
+"class field, for instance. RFC 2671"
 char * opts(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
                   u_short rdlength, bpf_u_int32 plen) {
     u_short payload_size = (packet[pos] << 8) + packet[pos+1];
@@ -387,7 +387,7 @@ void print_parser_usage() {
     fprintf(stderr, "parser usage:\n");
     for (i=0; i < count_parsers(); i++) {
         pc = rr_parsers[i];
-        fprintf(stderr, "  %s - %d\n", pc.name, pc.count);
+        fprintf(stderr, "  %s - %llu\n", pc.name, pc.count);
     }
 
     fprintf(stderr, "  undefined parser - %d\n", default_rr_parser.count);

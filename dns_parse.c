@@ -534,7 +534,7 @@ bpf_u_int32 parse_dns(bpf_u_int32 pos, const struct pcap_pkthdr *header,
 
     if (header->len - pos < 12) {
         char * msg = escape_data(packet, id_pos, header->len);
-        fprintf(stderr, "Truncated Packet(dns): %s\n"); 
+        fprintf(stderr, "Truncated Packet(dns): %s\n", msg); 
         return 0;
     }
 
@@ -655,7 +655,7 @@ void handler(u_char * args, const struct pcap_pkthdr *header,
         result = strftime(date, 200, format, time);
         if (result == 0) strncpy(date, "Date format error", 20);
     } else 
-        sprintf(date, "%d.%06d", header->ts.tv_sec, header->ts.tv_usec);
+        sprintf(date, "%d.%06d", (int)header->ts.tv_sec, (int)header->ts.tv_usec);
    
     if (MULTI_SEP == NULL) {
         sep = '\t';
@@ -688,7 +688,7 @@ void handler(u_char * args, const struct pcap_pkthdr *header,
             struct rr_parser_container * parser; 
             parser = find_parser(qnext->cls, qnext->type);
             if (parser->name == NULL) 
-                printf("%c%s UNKNOWN(%d,%d)", sep, qnext->name, parser->name,
+                printf("%c%s UNKNOWN(%s,%d)", sep, qnext->name, parser->name,
                                               qnext->type, qnext->cls);
             else 
                 printf("%c%s %s", sep, qnext->name, parser->name);
