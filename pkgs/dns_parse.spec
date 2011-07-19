@@ -1,5 +1,5 @@
 Name:           dns_parse
-Version:        0.2.7
+Version:        0.2.8
 Release:        4%{?dist}
 Summary:        Converts pcap files of DNS data into something more manageable.
 Source:         dns_parse-%{version}.tar.gz
