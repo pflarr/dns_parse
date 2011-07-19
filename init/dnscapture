@@ -56,7 +56,7 @@ start()
         exit -1;
     fi
 
-    OPTIONS="-i $IFACE -w $OUTPUT_DIR/$FILE_NAME"
+    OPTIONS="-i $IFACE -n -w $OUTPUT_DIR/$FILE_NAME"
 
     if [ -n "$FILE_SIZE_LIMIT" -a -n "$FILE_TIME_LIMIT" ]; then 
         echo "You can't set both a file size limit and a file time limit."
