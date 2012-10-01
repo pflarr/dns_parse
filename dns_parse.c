@@ -17,17 +17,20 @@
 // Globals passed in via the command line.
 // I don't really want these to be globals, but libpcap doesn't really 
 // have the mechanism I need to pass them to the handler.
-u_short EXCLUDED[MAX_EXCLUDES];
-u_short EXCLUDES = 0;
-char * MULTI_SEP = NULL;
-// The Additional and Name server sections are disabled by default.
-int AD_ENABLED = 0;
-#include <string.h>
-int NS_ENABLED = 0;
-int PRETTY_DATE = 0;
-int PRINT_RR_NAME = 0;
-int MISSING_TYPE_WARNINGS = 0;
+struct config {
+    u_short EXCLUDED[MAX_EXCLUDES];
+    u_short EXCLUDES;
+    char SEP;
+    char * RECORD_SEP;
+    int AD_ENABLED;
+    int NS_ENABLED;
+    int PRETTY_DATE;
+    int PRINT_RR_NAME;
+    int MISSING_TYPE_WARNINGS;
+};
 
+// We'll be passing the 'config' structure * through as the last 
+// argument in a pretty hackish way.
 void handler(u_char *, const struct pcap_pkthdr *, const u_char *);
 
 typedef struct ipv4_info {
@@ -83,7 +86,7 @@ int main(int argc, char **argv) {
     pcap_t * pcap_file;
     char errbuf[PCAP_ERRBUF_SIZE];
     int read;
-    u_char * empty = "";
+    struct config conf;
     
     int c;
     char *cvalue = NULL;
@@ -92,43 +95,55 @@ int main(int argc, char **argv) {
 
     const char * OPTIONS = "dfhm:Mnurtx:";
 
+    // Setting configuration defaults.
+    conf.EXCLUDES = 0;
+    conf.RECORD_SEP = "";
+    conf.SEP = '\t';
+    conf.AD_ENABLED = 0;
+    conf.NS_ENABLED = 0;
+    conf.PRETTY_DATE = 0;
+    conf.PRINT_RR_NAME = 0;
+    conf.MISSING_TYPE_WARNINGS = 0;
+
+
     c = getopt(argc, argv, OPTIONS);
     while (c != -1) {
         switch (c) {
             case 'd':
-                AD_ENABLED = 1;
+                conf.AD_ENABLED = 1;
                 break;
             case 'f':
                 print_parsers();
                 return 0;
             case 'm':
-                MULTI_SEP = optarg;
+                conf.RECORD_SEP = optarg;
+                conf.SEP = '\n';
                 break;
             case 'M':
-                MISSING_TYPE_WARNINGS = 1;
+                conf.MISSING_TYPE_WARNINGS = 1;
                 break;
             case 'n':
-                NS_ENABLED = 1;
+                conf.NS_ENABLED = 1;
                 break;
             case 'r':
-                PRINT_RR_NAME = 1;
+                conf.PRINT_RR_NAME = 1;
                 break;
             case 't':
-                PRETTY_DATE = 1; 
+                conf.PRETTY_DATE = 1; 
                 break;
             case 'u':
                 print_type_freq = 1;
                 break;
             case 'x':
-                if (EXCLUDES < MAX_EXCLUDES) {
+                if (conf.EXCLUDES < MAX_EXCLUDES) {
                     int ival = atoi(optarg);
                     if (ival == 0 || ival >= 65536) {
                         fprintf(stderr, "Invalid excluded rtype value. "
                                 "Value must be a short int.\n");
                         arg_failure = 1;
                     } else {
-                        EXCLUDED[EXCLUDES] = ival;
-                        EXCLUDES++; 
+                        conf.EXCLUDED[conf.EXCLUDES] = ival;
+                        conf.EXCLUDES++; 
                     }
                 } else {
                     fprintf(stderr, "Too many excluded rtypes. "
@@ -230,7 +245,8 @@ int main(int argc, char **argv) {
     }
  
     // need to check this for overflow.
-    read = pcap_dispatch(pcap_file, -1, (pcap_handler)handler, empty);
+    read = pcap_dispatch(pcap_file, -1, (pcap_handler)handler, 
+                         (u_char *) &conf);
    
     if (print_type_freq) print_parser_usage();
     
@@ -416,7 +432,8 @@ bpf_u_int32 parse_questions(bpf_u_int32 pos, bpf_u_int32 id_pos,
 
 bpf_u_int32 parse_rr(bpf_u_int32 pos, bpf_u_int32 id_pos, 
                      const struct pcap_pkthdr *header, 
-                     const u_char *packet, dns_rr * rr) {
+                     const u_char *packet, dns_rr * rr,
+                     struct config * conf) {
     int i;
     bpf_u_int32 rr_start = pos;
     rr_parser_container * parser;
@@ -472,7 +489,7 @@ bpf_u_int32 parse_rr(bpf_u_int32 pos, bpf_u_int32 id_pos,
     printf("Applying RR parser: %s\n", parser->name);
     #endif
 
-    if (MISSING_TYPE_WARNINGS && &default_rr_parser == parser) 
+    if (conf->MISSING_TYPE_WARNINGS && &default_rr_parser == parser) 
         fprintf(stderr, "Missing parser for class %d, type %d\n", 
                         rr->cls, rr->type);
 
@@ -501,7 +518,7 @@ bpf_u_int32 parse_rr(bpf_u_int32 pos, bpf_u_int32 id_pos,
 bpf_u_int32 parse_rr_set(bpf_u_int32 pos, bpf_u_int32 id_pos, 
                          const struct pcap_pkthdr *header,
                          const u_char *packet, u_short count, 
-                         dns_rr ** root) {
+                         dns_rr ** root, struct config * conf) {
     dns_rr * last = NULL;
     dns_rr * current;
     u_short i;
@@ -510,7 +527,7 @@ bpf_u_int32 parse_rr_set(bpf_u_int32 pos, bpf_u_int32 id_pos,
         current = malloc(sizeof(dns_rr));
         current->next = NULL; current->name = NULL; current->data = NULL;
         
-        pos = parse_rr(pos, id_pos, header, packet, current);
+        pos = parse_rr(pos, id_pos, header, packet, current, conf);
         // If a non-recoverable error occurs when parsing an rr, 
         // we can only return what we've got and give up.
         if (pos == 0) {
@@ -526,7 +543,8 @@ bpf_u_int32 parse_rr_set(bpf_u_int32 pos, bpf_u_int32 id_pos,
 }
 
 bpf_u_int32 parse_dns(bpf_u_int32 pos, const struct pcap_pkthdr *header, 
-                      const u_char *packet, dns_header * dns) {
+                      const u_char *packet, dns_header * dns,
+                      struct config * conf) {
     
     int i;
     bpf_u_int32 id_pos = pos;
@@ -574,39 +592,40 @@ bpf_u_int32 parse_dns(bpf_u_int32 pos, const struct pcap_pkthdr *header,
                        dns->qdcount, &(dns->queries));
     if (pos != 0) 
         pos = parse_rr_set(pos, id_pos, header, packet, 
-                           dns->ancount, &(dns->answers));
+                           dns->ancount, &(dns->answers), conf);
     else dns->answers = NULL;
-    if (pos != 0 && (NS_ENABLED || AD_ENABLED)) {
+    if (pos != 0 && (conf->NS_ENABLED || conf->AD_ENABLED)) {
         pos = parse_rr_set(pos, id_pos, header, packet, 
-                           dns->nscount, &(dns->name_servers));
+                           dns->nscount, &(dns->name_servers), conf);
     } else dns->name_servers = NULL;
-    if (pos != 0 && AD_ENABLED) {
+    if (pos != 0 && conf->AD_ENABLED) {
         pos = parse_rr_set(pos, id_pos, header, packet, 
-                           dns->arcount, &(dns->additional));
+                           dns->arcount, &(dns->additional), conf);
     } else dns->additional = NULL;
     return pos;
 }
 
-void print_rr_section(dns_rr * next, char * name, char sep) {
+void print_rr_section(dns_rr * next, char * name, struct config * conf) {
     int skip;
     int i;
-    if (next != NULL) printf("%c%s", sep, name);
+    if (next != NULL) printf("%c%s", conf->SEP, name);
     while (next != NULL) {
         skip = 0;
-        for (i=0; i < EXCLUDES && skip == 0; i++) 
-            if (next->type == EXCLUDED[i]) skip = 1;
+        for (i=0; i < conf->EXCLUDES && skip == 0; i++) 
+            if (next->type == conf->EXCLUDED[i]) skip = 1;
         if (!skip) {
             char *name, *data;
             name = (next->name == NULL) ? "*empty*" : next->name;
             data = (next->data == NULL) ? "*empty*" : next->data;
-            if (PRINT_RR_NAME) { 
+            if (conf->PRINT_RR_NAME) { 
                 if (next->rr_name == NULL) 
-                    printf("%c%s UNKNOWN(%d,%d) %s", sep, name, next->type,
-                                                     next->cls, data);
+                    printf("%c%s UNKNOWN(%d,%d) %s", conf->SEP, name, 
+                                                     next->type, next->cls, 
+                                                     data);
                 else
-                    printf("%c%s %s %s", sep, name, next->rr_name, data);
+                    printf("%c%s %s %s", conf->SEP, name, next->rr_name, data);
             } else
-                printf("%c%s %d %d %s", sep, name, next->type, 
+                printf("%c%s %d %d %s", conf->SEP, name, next->type, 
                                         next->cls, data);
         }
         next = next->next; 
@@ -619,9 +638,7 @@ void handler(u_char * args, const struct pcap_pkthdr *header,
     struct ipv4_info ipv4;
     struct udp_info udp;
     struct dns_header dns;
-
-    char sep;
-    char * record_sep;
+    struct config * conf = (struct config *) args;
 
     char date[200];
     char proto;
@@ -645,9 +662,9 @@ void handler(u_char * args, const struct pcap_pkthdr *header,
     pos = parse_udp(pos, header, packet, &udp);
     if ( pos == 0 ) return;
 
-    pos = parse_dns(pos, header, packet, &dns);
+    pos = parse_dns(pos, header, packet, &dns, conf);
 
-    if (PRETTY_DATE) {
+    if (conf->PRETTY_DATE) {
         struct tm *time;
         size_t result;
         const char * format = "%D %T";
@@ -657,14 +674,6 @@ void handler(u_char * args, const struct pcap_pkthdr *header,
     } else 
         sprintf(date, "%d.%06d", (int)header->ts.tv_sec, (int)header->ts.tv_usec);
    
-    if (MULTI_SEP == NULL) {
-        sep = '\t';
-        record_sep = "";
-    } else {
-        sep = '\n';
-        record_sep = MULTI_SEP;
-    }
-
     if (ipv4.proto == 17) {
         proto = 'u';
         dnslength = udp.length;
@@ -682,24 +691,28 @@ void handler(u_char * args, const struct pcap_pkthdr *header,
            ipv4.dstip[0], ipv4.dstip[1], ipv4.dstip[2], ipv4.dstip[3],
            dnslength, proto, dns.qr ? 'r':'q', dns.AA?"AA":"NA");
     qnext = dns.queries;
-    if (qnext != NULL) printf("%cQueries", sep);
+    if (qnext != NULL) printf("%cQueries", conf->SEP);
     while (qnext != NULL) {
-        if (PRINT_RR_NAME) {
+        if (conf->PRINT_RR_NAME) {
             struct rr_parser_container * parser; 
             parser = find_parser(qnext->cls, qnext->type);
             if (parser->name == NULL) 
-                printf("%c%s UNKNOWN(%s,%d)", sep, qnext->name, parser->name,
-                                              qnext->type, qnext->cls);
+                printf("%c%s UNKNOWN(%s,%d)", conf->SEP, qnext->name, 
+                                              parser->name, qnext->type, 
+                                              qnext->cls);
             else 
-                printf("%c%s %s", sep, qnext->name, parser->name);
+                printf("%c%s %s", conf->SEP, qnext->name, parser->name);
         } else
-            printf("%c%s %d %d", sep, qnext->name, qnext->type, qnext->cls);
+            printf("%c%s %d %d", conf->SEP, qnext->name, qnext->type, 
+                                 qnext->cls);
         qnext = qnext->next; 
     }
-    print_rr_section(dns.answers, "Answers", sep);
-    if (NS_ENABLED) print_rr_section(dns.name_servers, "Name Servers", sep);
-    if (AD_ENABLED) print_rr_section(dns.additional, "Additional", sep);
-    printf("%c%s\n", sep, record_sep);
+    print_rr_section(dns.answers, "Answers", conf);
+    if (conf->NS_ENABLED) 
+        print_rr_section(dns.name_servers, "Name Servers", conf);
+    if (conf->AD_ENABLED) 
+        print_rr_section(dns.additional, "Additional", conf);
+    printf("%c%s\n", conf->SEP, conf->RECORD_SEP);
     
     dns_question_free(dns.queries);
     dns_rr_free(dns.answers);
