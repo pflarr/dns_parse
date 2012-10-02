@@ -1,0 +1,121 @@
+#!/bin/sh
+#
+# Init file for dns capture daemon (just a tcpdump process...)
+# This was written for RHEL 5, and will probably need to be modified
+# for other systems.
+#
+# chkconfig: 2345 50 50
+# description: DNS capture daemon
+#
+# processname: tcpdump
+# config: /etc/dnscapture
+# pidfile: /var/run/dnscapture.pid
+
+. /etc/init.d/functions
+PID_FILE=/var/run/dnscapture.pid
+CONFIG_FILE=/etc/dnscapture.conf
+
+# These variables may all be overridden in the config file.
+TCPDUMP=/usr/sbin/tcpdump
+IFACE=""
+OUTPUT_DIR=""
+OUTPUT_USER="nobody"
+# The max size of each file.
+FILE_SIZE_LIMIT=""
+# The length of each file in seconds
+FILE_TIME_LIMIT=""
+# The output filename. This can include strftime escapes
+FILE_NAME="dns.%F_%T.pcap"
+FILTER="ip and port 53"
+COMPRESS=""
+
+. $CONFIG_FILE
+
+# Check the pid in the pidfile to see if the process is running.
+# Usage: is_running {pidfile}
+# Returns 0 if the pidfile contains the pid of a running process.
+is_running()
+{
+    if [ -f $1 ]; then
+        read pid < $1
+        if [ -d "/proc/$pid" ]; then 
+            return 0
+        fi
+    fi
+    return -1
+}
+
+start() 
+{ 
+    if [ -z $FILE_NAME -o -z $OUTPUT_DIR -o -z $IFACE ]; then
+        echo "Missing required config variable - "
+        echo "FILE_NAME: $FILE_NAME"
+        echo "OUTPUT_DIR: $OUTPUT_DIR"
+        echo "IFACE: $IFACE"
+        echo "\nPlease make sure these are set in the config ($CONFIG_FILE)."
+        exit -1;
+    fi
+
+    OPTIONS="-i $IFACE -n -w $OUTPUT_DIR/$FILE_NAME"
+
+    if [ -n "$FILE_SIZE_LIMIT" -a -n "$FILE_TIME_LIMIT" ]; then 
+        echo "You can't set both a file size limit and a file time limit."
+        exit -1
+    elif [ -n "$FILE_SIZE_LIMIT" ]; then
+        OPTIONS="$OPTIONS -C $FILE_SIZE_LIMIT"
+    elif [ -n "$FILE_TIME_LIMIT" ]; then
+        OPTIONS="$OPTIONS -G $FILE_TIME_LIMIT"
+    fi
+
+    if [ -n "$OUTPUT_USER" ]; then
+        OPTIONS="$OPTIONS -Z $OUTPUT_USER"
+    fi
+
+    if [ -n "$COMPRESS" ]; then
+        OPTIONS="$OPTIONS -z gzip"
+    fi
+
+    OPTIONS="$OPTIONS $FILTER"
+
+    echo -n "Starting dns capture daemon: "
+
+    if is_running $PID_FILE; then
+        failure; 
+        echo "Already Running"
+        return -1;
+    fi
+
+    $TCPDUMP $OPTIONS >/dev/null 2>&1 & 
+    echo $! > $PID_FILE
+    if is_running $PID_FILE; then 
+        success;
+    fi
+    echo
+}
+
+stop() 
+{
+    killproc -p $PID_FILE
+    echo
+}
+
+case "$1" in
+    start)
+        start
+        touch /var/lock/subsys/dnscapture
+    ;;
+    stop)
+        stop
+        rm -f /var/lock/subsys/dnscapture
+    ;;
+    restart)
+        stop
+        start
+    ;;
+    status)
+        status -p $PID_FILE dnscapture
+    ;;
+    *)
+        echo "Usage: /etc/init.d/dnscapture start|stop|restart|status"
+    ;;
+esac

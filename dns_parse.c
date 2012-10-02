@@ -1,3 +1,4 @@
+#include <arpa/inet.h>
 #include <getopt.h>
 #include <pcap.h>
 #include <stdio.h>
@@ -12,54 +13,66 @@
 //#define VERBOSE
 //#define SHOW_RAW
 
-#define MAX_EXCLUDES 100
+#define LE_U_SHORT(B,O) (u_short)((B[O]<<8)+B[O+1])
+#define LE_U_INT(B,O) (bpf_u_int32)((B[O]<<24)+(B[O+1]<<16)+(B[O+2]<<8)+B[O+3])
 
-// Globals passed in via the command line.
-// I don't really want these to be globals, but libpcap doesn't really 
-// have the mechanism I need to pass them to the handler.
-u_short EXCLUDED[MAX_EXCLUDES];
-u_short EXCLUDES = 0;
-char * MULTI_SEP = NULL;
-// The Additional and Name server sections are disabled by default.
-int AD_ENABLED = 0;
-#include <string.h>
-int NS_ENABLED = 0;
-int PRETTY_DATE = 0;
-int PRINT_RR_NAME = 0;
-int MISSING_TYPE_WARNINGS = 0;
-
+// We'll be passing the 'config' structure * through as the last 
+// argument in a pretty hackish way.
 void handler(u_char *, const struct pcap_pkthdr *, const u_char *);
 
-typedef struct ipv4_info {
-    u_char srcip[4];
-    u_char dstip[4];
+typedef union {
+    struct in_addr v4;
+    struct in_addr v6;
+} ip_shared;
+
+typedef struct {
+    u_char version;
+    ip_shared srcip;
+    ip_shared dstip;
     u_short length;
     u_char proto;
-} ipv4_info;
+} ip_info;
     
-typedef struct udp_info {
+typedef struct {
     u_short srcport;
     u_short dstport;
     u_short length;
 } udp_info;
 
-typedef struct tcp_info {
+typedef struct {
     struct timeval when;
-    bpf_u_int32 srcip;
-    bpf_u_int32 dstip;
+    ip_shared srcip;
+    ip_shared dstip;
     u_short srcport;
     u_short dstport;
     bpf_u_int32 sequence;
     bpf_u_int32 ack_num;
     bpf_u_int32 len;
+    const struct pcap_pkthdr *header;
     u_char * data;
     struct tcp_info * child;
     struct tcp_info * next;
     struct tcp_info * prev;
 } tcp_info;
 
-tcp_info * TCP_STACK_HEAD = NULL;
-tcp_info * TCP_STACK_TAIL = NULL;
+#define MAX_EXCLUDES 100
+
+// Globals passed in via the command line.
+// I don't really want these to be globals, but libpcap doesn't really 
+// have the mechanism I need to pass them to the handler.
+typedef struct {
+    u_short EXCLUDED[MAX_EXCLUDES];
+    u_short EXCLUDES;
+    char SEP;
+    char * RECORD_SEP;
+    int AD_ENABLED;
+    int NS_ENABLED;
+    int PRETTY_DATE;
+    int PRINT_RR_NAME;
+    int MISSING_TYPE_WARNINGS;
+    tcp_info * TCP_STACK_HEAD;
+    tcp_info * TCP_STACK_TAIL;
+} config;
 
 typedef struct dns_question {
     char * name;
@@ -80,7 +93,7 @@ typedef struct dns_rr {
     struct dns_rr * next;
 } dns_rr;
 
-typedef struct dns_header {
+typedef struct {
     u_short id;
     char qr;
     char AA;
@@ -101,7 +114,7 @@ int main(int argc, char **argv) {
     pcap_t * pcap_file;
     char errbuf[PCAP_ERRBUF_SIZE];
     int read;
-    u_char * empty = "";
+    config conf;
     
     int c;
     char *cvalue = NULL;
@@ -110,43 +123,55 @@ int main(int argc, char **argv) {
 
     const char * OPTIONS = "dfhm:Mnurtx:";
 
+    // Setting configuration defaults.
+    conf.EXCLUDES = 0;
+    conf.RECORD_SEP = "";
+    conf.SEP = '\t';
+    conf.AD_ENABLED = 0;
+    conf.NS_ENABLED = 0;
+    conf.PRETTY_DATE = 0;
+    conf.PRINT_RR_NAME = 0;
+    conf.MISSING_TYPE_WARNINGS = 0;
+
+
     c = getopt(argc, argv, OPTIONS);
     while (c != -1) {
         switch (c) {
             case 'd':
-                AD_ENABLED = 1;
+                conf.AD_ENABLED = 1;
                 break;
             case 'f':
                 print_parsers();
                 return 0;
             case 'm':
-                MULTI_SEP = optarg;
+                conf.RECORD_SEP = optarg;
+                conf.SEP = '\n';
                 break;
             case 'M':
-                MISSING_TYPE_WARNINGS = 1;
+                conf.MISSING_TYPE_WARNINGS = 1;
                 break;
             case 'n':
-                NS_ENABLED = 1;
+                conf.NS_ENABLED = 1;
                 break;
             case 'r':
-                PRINT_RR_NAME = 1;
+                conf.PRINT_RR_NAME = 1;
                 break;
             case 't':
-                PRETTY_DATE = 1; 
+                conf.PRETTY_DATE = 1; 
                 break;
             case 'u':
                 print_type_freq = 1;
                 break;
             case 'x':
-                if (EXCLUDES < MAX_EXCLUDES) {
+                if (conf.EXCLUDES < MAX_EXCLUDES) {
                     int ival = atoi(optarg);
                     if (ival == 0 || ival >= 65536) {
                         fprintf(stderr, "Invalid excluded rtype value. "
                                 "Value must be a short int.\n");
                         arg_failure = 1;
                     } else {
-                        EXCLUDED[EXCLUDES] = ival;
-                        EXCLUDES++; 
+                        conf.EXCLUDED[conf.EXCLUDES] = ival;
+                        conf.EXCLUDES++; 
                     }
                 } else {
                     fprintf(stderr, "Too many excluded rtypes. "
@@ -248,7 +273,8 @@ int main(int argc, char **argv) {
     }
  
     // need to check this for overflow.
-    read = pcap_dispatch(pcap_file, -1, (pcap_handler)handler, empty);
+    read = pcap_dispatch(pcap_file, -1, (pcap_handler)handler, 
+                         (u_char *) &conf);
    
     if (print_type_freq) print_parser_usage();
     
@@ -328,7 +354,7 @@ bpf_u_int32 parse_eth(const struct pcap_pkthdr *header, const u_char *packet) {
 }
 
 bpf_u_int32 parse_ipv4(bpf_u_int32 pos, const struct pcap_pkthdr *header, 
-                      const u_char *packet, ipv4_info * ipv4) {
+                      const u_char *packet, ip_info * ip) {
 
     bpf_u_int32 version, h_len;
     int i;
@@ -340,13 +366,11 @@ bpf_u_int32 parse_ipv4(bpf_u_int32 pos, const struct pcap_pkthdr *header,
     
     version = packet[pos] >> 4;
     h_len = packet[pos] & 0x0f;
-    ipv4->length = (packet[pos+2] << 8) + packet[pos+3] - h_len*4;
-    ipv4->proto = packet[pos+9];
+    ip->length = (packet[pos+2] << 8) + packet[pos+3] - h_len*4;
+    ip->proto = packet[pos+9];
 
-    for (i=0; i<4; i++) {
-        ipv4->srcip[i] = packet[pos + 12 + i];
-        ipv4->dstip[i] = packet[pos + 16 + i];
-    }
+    ip->srcip.v4.s_addr = *(in_addr_t *)(packet + pos + 12);
+    ip->dstip.v4.s_addr = *(in_addr_t *)(packet + pos + 16);
 
     #ifdef VERBOSE
     #ifdef SHOW_RAW
@@ -354,10 +378,9 @@ bpf_u_int32 parse_ipv4(bpf_u_int32 pos, const struct pcap_pkthdr *header,
     print_packet(header, packet, pos, pos + 4*h_len, 4);
     #endif
     printf("version: %d, length: %d, proto: %d\n", 
-            version, ipv4->length, ipv4->proto);
-    printf("srcip: %d.%d.%d.%d, dstip: %d.%d.%d.%d\n",
-           ipv4->srcip[0], ipv4->srcip[1], ipv4->srcip[2], ipv4->srcip[3],
-           ipv4->dstip[0], ipv4->dstip[1], ipv4->dstip[2], ipv4->dstip[3]);
+            version, ip->length, ip->proto);
+    printf("srcip: %s, dstip: %s\n", inet_ntoa(ip->srcip.v4),
+                                     inet_ntoa(ip->dstip.v4));
     #endif
 
     // move the position up past the options section.
@@ -366,7 +389,7 @@ bpf_u_int32 parse_ipv4(bpf_u_int32 pos, const struct pcap_pkthdr *header,
 }
 
 bpf_u_int32 parse_udp(bpf_u_int32 pos, const struct pcap_pkthdr *header, 
-                      const u_char *packet, udp_info * udp) {
+                      const u_char *packet, udp_info * udp, config * conf) {
     u_short test;
     if (header->len - pos < 8) {
         printf("Truncated Packet(udp)\n");
@@ -386,71 +409,57 @@ bpf_u_int32 parse_udp(bpf_u_int32 pos, const struct pcap_pkthdr *header,
     return pos + 8;
 }
 
-u_short tcp_checksum(struct ipv4_info *ip, const u_char *packet, 
-                     bpf_u_int32 pos, bpf_u_int32 length) {
-    unsigned int sum;
-    bpf_u_int32 len;
-    unsigned int * words;
+u_short tcp_checksum(ip_info *ip, const u_char *packet, 
+                     bpf_u_int32 pos, const struct pcap_pkthdr *header) {
+    unsigned int sum = 0;
     unsigned int i;
   
-
-    length = pos + ip->length;
-    len = (length - pos)/2 + 6;
-    if ((length - pos) % 2) len++;
-
-    words = malloc(sizeof(unsigned int) * len);
-
-    words[0] = (unsigned int)(ip->srcip[0] << 8) + ip->srcip[1];
-    words[1] = (unsigned int)(ip->srcip[2] << 8) + ip->srcip[3]; 
-    words[2] = (unsigned int)(ip->dstip[0] << 8) + ip->dstip[1];
-    words[3] = (unsigned int)(ip->dstip[2] << 8) + ip->dstip[3];
-    words[4] = ip->proto;
-    words[5] = ip->length;
- 
-    i = 6;
-    while (pos + 1 < length) {
-        words[i] = (packet[pos] << 8) + packet[pos+1];
-        i++;
+    // Put together the psuedo-header preamble for the checksum calculation.
+    sum += (ip->srcip.v4.s_addr >> 16) + (ip->srcip.v4.s_addr & 0xffff);
+    sum += (ip->dstip.v4.s_addr >> 16) + (ip->dstip.v4.s_addr & 0xffff);
+    sum += ip->proto;
+    sum += ip->length;
+  
+    // Add the TCP Header up to the checksum, which we'll skip.
+    for (i=0; i < 14; i += 2) 
+        sum += *(u_short *) (packet + pos + i);
+    
+    // Skip the checksum.
+    pos = pos + i + 2;
+    
+    // Add the rest of the packet, stopping short of a final odd byte.
+    while (pos < header->len - 1) {
+        sum += *(u_short *) (packet + pos);
         pos += 2;
     }
+    // Pad the last, odd byte if present.
+    if (pos < header->len) 
+        sum += packet[pos] << 8;
 
-    if (pos < length) {
-        words[i] = (packet[pos] << 8);
-        i++;
-    }
-
-    sum = 0;
-    for (i = 0; i < len; i++) {
-        sum += words[i];
-    }
-
-    free(words);
+    // All the overflow bits should be added to the lower 16.
+    // The max size of an IP packet prevents it from being able to overflow
+    // from adding the overflow.
     sum = (sum & 0xffff) + (sum >> 16);
-    sum += sum >> 16;
     return ~sum;
 }
 
 u_char * parse_tcp(bpf_u_int32 pos, const struct pcap_pkthdr *header, 
-                   const u_char *packet, ipv4_info *ip, udp_info * udp) {
-    struct tcp_info * tcp = malloc(sizeof(tcp_info));
-    struct tcp_info * next;
+                   const u_char *packet, ip_info *ip, udp_info * udp,
+                   config * config) {
+    tcp_info * tcp = malloc(sizeof(tcp_info));
+    tcp_info * next;
     int i;
     unsigned int offset;
     bpf_u_int32 data_len;
     u_short checksum;
     u_short actual_checksum;
 
-    tcp->srcip = *((bpf_u_int32 *)ip->srcip);
-    tcp->dstip = *((bpf_u_int32 *)ip->dstip);
-    tcp->srcport = (packet[pos] << 8) + packet[pos+1];
-    tcp->dstport = (packet[pos+2] << 8) + packet[pos+3];
-    tcp->control = packet[pos+13]; 
-    tcp->sequence = 0;
-    tcp->ack_num = 0;
-    for (i = 0; i < 4; i++) {
-        tcp->sequence = (tcp->sequence << 8) + packet[pos + 4 + i];
-        tcp->ack_num = (tcp->ack_num << 8) + packet[pos + 8 + i];
-    }
+    tcp->srcip = ip->srcip;
+    tcp->dstip = ip->dstip;
+    tcp->srcport = LE_U_SHORT(packet, pos);
+    tcp->dstport = LE_U_SHORT(packet, pos+2);
+    tcp->sequence = LE_U_INT(packet, pos + 4);
+    tcp->ack_num = LE_U_INT(packet, pos + 8);
     offset = packet[pos + 12] >> 4;
 
     if ((pos + offset*4) > header->len) {
@@ -458,12 +467,13 @@ u_char * parse_tcp(bpf_u_int32 pos, const struct pcap_pkthdr *header,
         free(tcp);
         return NULL;
     }
-    tcp->len = header->len - pos;
+    tcp->len = ip->length - offset*4;
   
     // Ignore packets with a bad checksum
-    if (tcp_checksum(ip, packet, pos, header->len) != 0)
-        return NULL;
-
+    checksum = *(u_short *)(packet + pos + 16);
+    actual_checksum = tcp_checksum(ip, packet, pos, header);
+    fprintf(stderr, "Checksum: 0x%04x, 0x%04x\n", checksum, actual_checksum);
+    /*
     tcp->data_len = ip->length - offset; 
     if (tcp->data_len > 0) {
         tcp->data = malloc(sizeof(char) * (tcp->data_len));
@@ -508,10 +518,7 @@ u_char * parse_tcp(bpf_u_int32 pos, const struct pcap_pkthdr *header,
                 int next_seq;
                 while (asnext) {
                     if asnext->
-
-                    
-
-
+    */
     return NULL;
 }
 
@@ -562,7 +569,8 @@ bpf_u_int32 parse_questions(bpf_u_int32 pos, bpf_u_int32 id_pos,
 
 bpf_u_int32 parse_rr(bpf_u_int32 pos, bpf_u_int32 id_pos, 
                      const struct pcap_pkthdr *header, 
-                     const u_char *packet, dns_rr * rr) {
+                     const u_char *packet, dns_rr * rr,
+                     config * conf) {
     int i;
     bpf_u_int32 rr_start = pos;
     rr_parser_container * parser;
@@ -618,7 +626,7 @@ bpf_u_int32 parse_rr(bpf_u_int32 pos, bpf_u_int32 id_pos,
     printf("Applying RR parser: %s\n", parser->name);
     #endif
 
-    if (MISSING_TYPE_WARNINGS && &default_rr_parser == parser) 
+    if (conf->MISSING_TYPE_WARNINGS && &default_rr_parser == parser) 
         fprintf(stderr, "Missing parser for class %d, type %d\n", 
                         rr->cls, rr->type);
 
@@ -647,7 +655,7 @@ bpf_u_int32 parse_rr(bpf_u_int32 pos, bpf_u_int32 id_pos,
 bpf_u_int32 parse_rr_set(bpf_u_int32 pos, bpf_u_int32 id_pos, 
                          const struct pcap_pkthdr *header,
                          const u_char *packet, u_short count, 
-                         dns_rr ** root) {
+                         dns_rr ** root, config * conf) {
     dns_rr * last = NULL;
     dns_rr * current;
     u_short i;
@@ -656,7 +664,7 @@ bpf_u_int32 parse_rr_set(bpf_u_int32 pos, bpf_u_int32 id_pos,
         current = malloc(sizeof(dns_rr));
         current->next = NULL; current->name = NULL; current->data = NULL;
         
-        pos = parse_rr(pos, id_pos, header, packet, current);
+        pos = parse_rr(pos, id_pos, header, packet, current, conf);
         // If a non-recoverable error occurs when parsing an rr, 
         // we can only return what we've got and give up.
         if (pos == 0) {
@@ -672,7 +680,8 @@ bpf_u_int32 parse_rr_set(bpf_u_int32 pos, bpf_u_int32 id_pos,
 }
 
 bpf_u_int32 parse_dns(bpf_u_int32 pos, const struct pcap_pkthdr *header, 
-                      const u_char *packet, dns_header * dns) {
+                      const u_char *packet, dns_header * dns,
+                      config * conf) {
     
     int i;
     bpf_u_int32 id_pos = pos;
@@ -680,7 +689,7 @@ bpf_u_int32 parse_dns(bpf_u_int32 pos, const struct pcap_pkthdr *header,
 
     if (header->len - pos < 12) {
         char * msg = escape_data(packet, id_pos, header->len);
-        fprintf(stderr, "Truncated Packet(dns): %s\n"); 
+        fprintf(stderr, "Truncated Packet(dns): %s\n", msg); 
         return 0;
     }
 
@@ -717,42 +726,43 @@ bpf_u_int32 parse_dns(bpf_u_int32 pos, const struct pcap_pkthdr *header,
     #endif
 
     pos = parse_questions(pos+12, id_pos, header, packet, 
-                       dns->qdcount, &(dns->queries));
+                          dns->qdcount, &(dns->queries));
     if (pos != 0) 
         pos = parse_rr_set(pos, id_pos, header, packet, 
-                           dns->ancount, &(dns->answers));
+                           dns->ancount, &(dns->answers), conf);
     else dns->answers = NULL;
-    if (pos != 0 && (NS_ENABLED || AD_ENABLED)) {
+    if (pos != 0 && (conf->NS_ENABLED || conf->AD_ENABLED)) {
         pos = parse_rr_set(pos, id_pos, header, packet, 
-                           dns->nscount, &(dns->name_servers));
+                           dns->nscount, &(dns->name_servers), conf);
     } else dns->name_servers = NULL;
-    if (pos != 0 && AD_ENABLED) {
+    if (pos != 0 && conf->AD_ENABLED) {
         pos = parse_rr_set(pos, id_pos, header, packet, 
-                           dns->arcount, &(dns->additional));
+                           dns->arcount, &(dns->additional), conf);
     } else dns->additional = NULL;
     return pos;
 }
 
-void print_rr_section(dns_rr * next, char * name, char sep) {
+void print_rr_section(dns_rr * next, char * name, config * conf) {
     int skip;
     int i;
-    if (next != NULL) printf("%c%s", sep, name);
+    if (next != NULL) printf("%c%s", conf->SEP, name);
     while (next != NULL) {
         skip = 0;
-        for (i=0; i < EXCLUDES && skip == 0; i++) 
-            if (next->type == EXCLUDED[i]) skip = 1;
+        for (i=0; i < conf->EXCLUDES && skip == 0; i++) 
+            if (next->type == conf->EXCLUDED[i]) skip = 1;
         if (!skip) {
             char *name, *data;
             name = (next->name == NULL) ? "*empty*" : next->name;
             data = (next->data == NULL) ? "*empty*" : next->data;
-            if (PRINT_RR_NAME) { 
+            if (conf->PRINT_RR_NAME) { 
                 if (next->rr_name == NULL) 
-                    printf("%c%s UNKNOWN(%d,%d) %s", sep, name, next->type,
-                                                     next->cls, data);
+                    printf("%c%s UNKNOWN(%d,%d) %s", conf->SEP, name, 
+                                                     next->type, next->cls, 
+                                                     data);
                 else
-                    printf("%c%s %s %s", sep, name, next->rr_name, data);
+                    printf("%c%s %s %s", conf->SEP, name, next->rr_name, data);
             } else
-                printf("%c%s %d %d %s", sep, name, next->type, 
+                printf("%c%s %d %d %s", conf->SEP, name, next->type, 
                                         next->cls, data);
         }
         next = next->next; 
@@ -762,18 +772,16 @@ void print_rr_section(dns_rr * next, char * name, char sep) {
 void handler(u_char * args, const struct pcap_pkthdr *header, 
              const u_char *packet) {
     int pos;
-    struct ipv4_info ipv4;
-    struct udp_info udp;
-    struct dns_header dns;
-
-    char sep;
-    char * record_sep;
+    ip_info ip;
+    udp_info udp;
+    dns_header dns;
+    config * conf = (config *) args;
 
     char date[200];
     char proto;
     bpf_u_int32 dnslength;
-    struct dns_rr *next;
-    struct dns_question *qnext;
+    dns_rr *next;
+    dns_question *qnext;
 
     #ifdef VERBOSE
     printf("\nPacket %d.%d\n", header->ts.tv_sec, header->ts.tv_usec);
@@ -781,14 +789,14 @@ void handler(u_char * args, const struct pcap_pkthdr *header,
 
     pos = parse_eth(header, packet);
     if (pos == 0) return;
-    pos = parse_ipv4(pos, header, packet, &ipv4);
+    pos = parse_ipv4(pos, header, packet, &ip);
     if ( pos == 0) return;
-    if (ipv4.proto == 17) {
-        pos = parse_udp(pos, header, packet, &udp);
+    if (ip.proto == 17) {
+        pos = parse_udp(pos, header, packet, &udp, conf);
         if ( pos == 0 ) return;
-    } else if (ipv4.proto == 6) {
+    } else if (ip.proto == 6) {
         u_char * data;
-        data = parse_tcp(pos, header, packet, &ipv4, &udp);
+        data = parse_tcp(pos, header, packet, &ip, &udp, conf);
         // The tcp packet was absorbed or erroneous, don't do anything else.
         if (data == NULL) return;
         // Forge the packet, 
@@ -797,13 +805,13 @@ void handler(u_char * args, const struct pcap_pkthdr *header,
         // The header length and time are changed in parse_tcp
         // A fake udp object is also constructed.
     } else {
-        fprintf(stderr, "Unsupported Protocol(%d)\n", ipv4.proto);
+        fprintf(stderr, "Unsupported Protocol(%d)\n", ip.proto);
         return;
     }
    
-    pos = parse_dns(pos, header, packet, &dns);
+    pos = parse_dns(pos, header, packet, &dns, conf);
 
-    if (PRETTY_DATE) {
+    if (conf->PRETTY_DATE) {
         struct tm *time;
         size_t result;
         const char * format = "%D %T";
@@ -811,20 +819,12 @@ void handler(u_char * args, const struct pcap_pkthdr *header,
         result = strftime(date, 200, format, time);
         if (result == 0) strncpy(date, "Date format error", 20);
     } else 
-        sprintf(date, "%d.%06d", header->ts.tv_sec, header->ts.tv_usec);
+        sprintf(date, "%d.%06d", (int)header->ts.tv_sec, (int)header->ts.tv_usec);
    
-    if (MULTI_SEP == NULL) {
-        sep = '\t';
-        record_sep = "";
-    } else {
-        sep = '\n';
-        record_sep = MULTI_SEP;
-    }
-
-    if (ipv4.proto == 17) {
+    if (ip.proto == 17) {
         proto = 'u';
         dnslength = udp.length;
-    } else if (ipv4.proto == 6) {
+    } else if (ip.proto == 6) {
         proto = 't';
         dnslength = 0;
     } else {    
@@ -833,29 +833,32 @@ void handler(u_char * args, const struct pcap_pkthdr *header,
     }
     
     fflush(stdout);
-    printf("%s,%d.%d.%d.%d,%d.%d.%d.%d,%d,%c,%c,%s", date,  
-           ipv4.srcip[0], ipv4.srcip[1], ipv4.srcip[2], ipv4.srcip[3],
-           ipv4.dstip[0], ipv4.dstip[1], ipv4.dstip[2], ipv4.dstip[3],
+    printf("%s,%s,%s,%d,%c,%c,%s", date, 
+           inet_ntoa(ip.srcip.v4), inet_ntoa(ip.dstip.v4),
            dnslength, proto, dns.qr ? 'r':'q', dns.AA?"AA":"NA");
     qnext = dns.queries;
-    if (qnext != NULL) printf("%cQueries", sep);
+    if (qnext != NULL) printf("%cQueries", conf->SEP);
     while (qnext != NULL) {
-        if (PRINT_RR_NAME) {
-            struct rr_parser_container * parser; 
+        if (conf->PRINT_RR_NAME) {
+            rr_parser_container * parser; 
             parser = find_parser(qnext->cls, qnext->type);
             if (parser->name == NULL) 
-                printf("%c%s UNKNOWN(%d,%d)", sep, qnext->name, parser->name,
-                                              qnext->type, qnext->cls);
+                printf("%c%s UNKNOWN(%s,%d)", conf->SEP, qnext->name, 
+                                              parser->name, qnext->type, 
+                                              qnext->cls);
             else 
-                printf("%c%s %s", sep, qnext->name, parser->name);
+                printf("%c%s %s", conf->SEP, qnext->name, parser->name);
         } else
-            printf("%c%s %d %d", sep, qnext->name, qnext->type, qnext->cls);
+            printf("%c%s %d %d", conf->SEP, qnext->name, qnext->type, 
+                                 qnext->cls);
         qnext = qnext->next; 
     }
-    print_rr_section(dns.answers, "Answers", sep);
-    if (NS_ENABLED) print_rr_section(dns.name_servers, "Name Servers", sep);
-    if (AD_ENABLED) print_rr_section(dns.additional, "Additional", sep);
-    printf("%c%s\n", sep, record_sep);
+    print_rr_section(dns.answers, "Answers", conf);
+    if (conf->NS_ENABLED) 
+        print_rr_section(dns.name_servers, "Name Servers", conf);
+    if (conf->AD_ENABLED) 
+        print_rr_section(dns.additional, "Additional", conf);
+    printf("%c%s\n", conf->SEP, conf->RECORD_SEP);
     
     dns_question_free(dns.queries);
     dns_rr_free(dns.answers);

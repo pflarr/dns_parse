@@ -7,7 +7,7 @@
 typedef char * rr_data_parser(const u_char*, bpf_u_int32, bpf_u_int32, 
                               u_short, bpf_u_int32);
 
-typedef struct rr_parser_container {
+typedef struct {
     u_short cls;
     u_short rtype;
     rr_data_parser * parser;

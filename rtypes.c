@@ -111,7 +111,7 @@ char * mx(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
 "The size and extended rcode are printed, but the dynamic fields are \n"\
 "simply escaped. Note that the associated format function is non-standard,\n"\
 "as EDNS records modify the basic resourse record protocol (there is no \n"\
-"class field, for instance. RFC 2671""
+"class field, for instance. RFC 2671"
 char * opts(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
                   u_short rdlength, bpf_u_int32 plen) {
     u_short payload_size = (packet[pos] << 8) + packet[pos+1];
@@ -281,28 +281,21 @@ char * escape(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 i,
 // Some of the rtypes below use the escape parser.  This isn't
 // because we don't know how to parse them, it's simply because that's
 // the right parser for them anyway.
-struct rr_parser_container rr_parsers[] = {{1, 1, A, "A", A_DOC, 0},
-                                           {0, 2, domain_name, "NS", D_DOC, 0},
-                                           {0, 5, domain_name, "CNAME", 
-                                                            D_DOC, 0},
-                                           {0, 6, soa, "SOA", SOA_DOC, 0},
-                                           {0, 12, domain_name, "PTR", 
-                                                            D_DOC, 0},
-                                           {1, 33, srv, "SRV", SRV_DOC, 0}, 
-                                           {1, 28, AAAA, "AAAA", AAAA_DOC, 0},
-                                           {0, 15, mx, "MX", MX_DOC, 0},
-                                           {0, 46, rrsig, "RRSIG", 
-                                                            RRSIG_DOC, 0},
-                                           {0, 16, escape, "TEXT", 
-                                                            NULL_DOC, 0}, 
-                                           {0, 47, nsec, "NSEC", 
-                                                            NSEC_DOC, 0},
-                                           {0, 43, ds, "DS", DS_DOC, 0},
-                                           {0, 10, escape, "NULL",
-                                                            NULL_DOC, 0}, 
-                                           {0, 48, dnskey, "DNSKEY", 
-                                                            KEY_DOC, 0}
-                                          };
+rr_parser_container rr_parsers[] = {{1, 1, A, "A", A_DOC, 0},
+                                    {0, 2, domain_name, "NS", D_DOC, 0},
+                                    {0, 5, domain_name, "CNAME", D_DOC, 0},
+                                    {0, 6, soa, "SOA", SOA_DOC, 0},
+                                    {0, 12, domain_name, "PTR", D_DOC, 0},
+                                    {1, 33, srv, "SRV", SRV_DOC, 0}, 
+                                    {1, 28, AAAA, "AAAA", AAAA_DOC, 0},
+                                    {0, 15, mx, "MX", MX_DOC, 0},
+                                    {0, 46, rrsig, "RRSIG", RRSIG_DOC, 0},
+                                    {0, 16, escape, "TEXT", NULL_DOC, 0}, 
+                                    {0, 47, nsec, "NSEC", NSEC_DOC, 0},
+                                    {0, 43, ds, "DS", DS_DOC, 0},
+                                    {0, 10, escape, "NULL", NULL_DOC, 0}, 
+                                    {0, 48, dnskey, "DNSKEY", KEY_DOC, 0}
+                                   };
 
 inline int count_parsers() {
     return sizeof(rr_parsers)/sizeof(rr_parser_container);
@@ -312,7 +305,7 @@ void sort_parsers() {
     int m,n;
     int change = 1;
     int pcount = count_parsers();
-    struct rr_parser_container tmp;
+    rr_parser_container tmp;
     for (m = 0; m < pcount - 1 && change == 1; m++) {
         change = 0;
         for (n = 0; n < pcount - 1; n++) {
@@ -372,7 +365,7 @@ void print_parsers() {
            " - Some resource records share parsers and documentation.\n\n"
            "class, rtype, name: documentation\n");
     for (i=0; i < count_parsers(); i++) {
-        struct rr_parser_container cont = rr_parsers[i];
+        rr_parser_container cont = rr_parsers[i];
         if (cont.cls == 0) printf("any,");
         else printf("%d,", cont.cls);
 
@@ -382,13 +375,13 @@ void print_parsers() {
 
 void print_parser_usage() {
     int i;
-    struct rr_parser_container pc;
+    rr_parser_container pc;
 
     fprintf(stderr, "parser usage:\n");
     for (i=0; i < count_parsers(); i++) {
         pc = rr_parsers[i];
-        fprintf(stderr, "  %s - %d\n", pc.name, pc.count);
+        fprintf(stderr, "  %s - %llu\n", pc.name, pc.count);
     }
 
-    fprintf(stderr, "  undefined parser - %d\n", default_rr_parser.count);
+    fprintf(stderr, "  undefined parser - %llu\n", default_rr_parser.count);
 }

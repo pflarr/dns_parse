@@ -1,0 +1,121 @@
+#!/usr/bin/python
+
+# This script is meant to be set up as a cron job. It uses dns_parse to 
+# parse a set of gzipped pcaps and writes the result to a single log file.
+# There are several config file options available, see the file at CFG_PATH
+# below.
+
+from ConfigParser import SafeConfigParser
+import glob
+import fcntl
+import os
+import subprocess
+import sys
+import syslog
+from syslog import LOG_KERN, LOG_USER, LOG_DAEMON, LOG_LOCAL0, LOG_LOCAL1,\
+                   LOG_LOCAL2, LOG_LOCAL3, LOG_LOCAL4, LOG_LOCAL5, \
+                   LOG_LOCAL6, LOG_LOCAL7
+
+CFG_PATH = '/etc/dns_parse.cfg'
+CFG_OPTIONS = ['PCAP_DIR', 'NETWORKS', 'STATE_DIR', 'OPTIONS', 
+               'LOG_FILE', 'ERROR_LOG_FACILITY']
+parser = SafeConfigParser()
+parser.read(CFG_PATH)
+
+FACILITIES = {'kern': LOG_KERN, 'user': LOG_USER, 'daemon': LOG_DAEMON,
+              'local0': LOG_LOCAL0, 'local1': LOG_LOCAL1, 'local2': LOG_LOCAL2,
+              'local3': LOG_LOCAL3, 'local4': LOG_LOCAL4, 'local5': LOG_LOCAL5,
+              'local6': LOG_LOCAL6, 'local7': LOG_LOCAL7}
+
+facility = None
+if parser.has_option('DEFAULT', 'ERROR_LOG_FACILITY'):
+    facility = parser.get('DEFAULT', 'ERROR_LOG_FACILITY')
+
+if facility in FACILITIES:
+    syslog.openlog("dns_parse_cron", 0, FACILITIES[facility])
+else:
+    syslog.openlog("dns_parse_cron", 0, LOG_DAEMON)
+    syslog.syslog(syslog.LOG_WARNING, "Missing or bad ERROR_LOG_FACILITY "
+                                      "option: %s" % facility)
+
+# Grab all the config options
+options = {'OPTIONS':''}
+for option in CFG_OPTIONS:
+    if parser.has_option('DEFAULT', option):
+        options[option] = parser.get('DEFAULT', option)
+
+    if option not in options:
+        print "You must set a value for option '%s' in %s" % (option, CFG_PATH)
+        sys.exit(-1)
+
+errtmp = os.path.join(options['STATE_DIR'], 'errtmp')
+
+# Process the files for each network specified.
+for network in options['NETWORKS'].split():
+    network = network.strip()
+    if not network:
+        continue
+    state_fn = os.path.join(options['STATE_DIR'], network)
+    if os.path.exists(state_fn):
+        statefile = open(state_fn)
+        last = statefile.read()
+    else:
+        if not os.path.exists(options['STATE_DIR']):
+            os.makedirs(options['STATE_DIR'])
+        statefile = open(state_fn, 'a')
+        last = None
+
+    try:
+        # Only allow one copy of this script to run at a time.
+        fcntl.flock(statefile, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        # It's assumed that we're using the COMPRESS option in the 
+        # capture script. It's also assumed that they're named such that
+        # a reversed sort will put them in order of most to least recent time
+        # wise.
+        path = os.path.join(options['PCAP_DIR'], network) + '.*.gz'
+        files = glob.glob(path)
+        files.sort(reverse=True)
+        if len(files) < 2:
+            continue
+       
+        # If we don't have a lock file, start with the most recent completed
+        # file.
+        if (last not in files):
+            i = 1 
+        else:
+            i = files.index(last) - 1
+
+        # process every file except the most current (it's currently being
+        # written).
+        success = True
+        while i > 0:
+            path = os.path.join(options['PCAP_DIR'], files[i])
+            cmd = 'gunzip -c %s | /usr/local/sbin/dns_parse %s - >> %s 2> %s'%\
+                  (path, options['OPTIONS'], options['LOG_FILE'], errtmp)
+            ret = subprocess.call(cmd, shell=True)
+            if ret != 0:
+                syslog.syslog(syslog.LOG_ERR, "Error processing file '%s'. "
+                                              "Cmd: %s" % (path, cmd))
+            try:
+                if os.path.exists(errtmp):
+                    errtmp_file = open(errtmp)
+                    for line in errtmp_file.readlines():
+                        syslog.syslog(syslog.LOG_INFO, line)
+                    errtmp_file.close()
+            except Exception, msg:
+                syslog.syslog(syslog.LOG_ERR, 
+                             "Error handling error file: %s" % msg)
+    
+            i = i - 1
+
+        try:
+            wstatefile = open(state_fn, 'w')
+            wstatefile.write(files[1])
+            wstatefile.close()
+        except Exception, msg:
+            syslog.syslog(syslog.LOG_ERR, "Statefile saving error: %s" % msg)
+    finally:
+        fcntl.flock(statefile, fcntl.LOCK_UN)
+        statefile.close()
+
