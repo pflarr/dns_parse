@@ -13,6 +13,9 @@
 //#define VERBOSE
 //#define SHOW_RAW
 
+#define eprintf(format, ...) fprintf(stderr, format, __VA_ARGS__)
+
+#define GET_BIT(B,O,BIT) (unsigned char)(((*(B+O)) & (1 << (BIT))) >> BIT )
 #define LE_U_SHORT(B,O) (u_short)((B[O]<<8)+B[O+1])
 #define LE_U_INT(B,O) (bpf_u_int32)((B[O]<<24)+(B[O+1]<<16)+(B[O+2]<<8)+B[O+3])
 
@@ -22,7 +25,7 @@ void handler(u_char *, const struct pcap_pkthdr *, const u_char *);
 
 typedef union {
     struct in_addr v4;
-    struct in_addr v6;
+    struct in6_addr v6;
 } ip_shared;
 
 typedef struct {
@@ -39,8 +42,8 @@ typedef struct {
     u_short length;
 } udp_info;
 
-typedef struct {
-    struct timeval when;
+typedef struct tcp_info {
+    struct timeval ts;
     ip_shared srcip;
     ip_shared dstip;
     u_short srcport;
@@ -48,12 +51,25 @@ typedef struct {
     bpf_u_int32 sequence;
     bpf_u_int32 ack_num;
     bpf_u_int32 len;
+    u_char syn;
+    u_char ack;
+    u_char fin;
+    u_char rst;
     const struct pcap_pkthdr *header;
     u_char * data;
-    struct tcp_info * child;
-    struct tcp_info * next;
-    struct tcp_info * prev;
+    size_t data_len;
+    // The next item in the list of tcp sessions.
+    struct tcp_info * next_sess;
+    // The previous item in the list of tcp sessions.
+    struct tcp_info * prev_sess;
+    // The next packet for this tcp session.
+    struct tcp_info * next_pkt;
+    // The last packet for this tcp session.
+    struct tcp_info * last_pkt;
 } tcp_info;
+
+void print_tcp(tcp_info *);
+void assemble_tcp(tcp_info *);
 
 #define MAX_EXCLUDES 100
 
@@ -70,8 +86,8 @@ typedef struct {
     int PRETTY_DATE;
     int PRINT_RR_NAME;
     int MISSING_TYPE_WARNINGS;
-    tcp_info * TCP_STACK_HEAD;
-    tcp_info * TCP_STACK_TAIL;
+    tcp_info * tcp_sessions_head;
+    tcp_info * tcp_sessions_tail;
 } config;
 
 typedef struct dns_question {
@@ -132,6 +148,8 @@ int main(int argc, char **argv) {
     conf.PRETTY_DATE = 0;
     conf.PRINT_RR_NAME = 0;
     conf.MISSING_TYPE_WARNINGS = 0;
+    conf.tcp_sessions_head = NULL;
+    conf.tcp_sessions_tail = NULL;
 
 
     c = getopt(argc, argv, OPTIONS);
@@ -413,39 +431,56 @@ u_short tcp_checksum(ip_info *ip, const u_char *packet,
                      bpf_u_int32 pos, const struct pcap_pkthdr *header) {
     unsigned int sum = 0;
     unsigned int i;
+    bpf_u_int32 srcip = ip->srcip.v4.s_addr; 
+    bpf_u_int32 dstip = ip->dstip.v4.s_addr; 
   
     // Put together the psuedo-header preamble for the checksum calculation.
-    sum += (ip->srcip.v4.s_addr >> 16) + (ip->srcip.v4.s_addr & 0xffff);
-    sum += (ip->dstip.v4.s_addr >> 16) + (ip->dstip.v4.s_addr & 0xffff);
+    // I handle the IP's in a rather odd manner and save a few cycles.
+    // Instead of arranging things such that for ip d.c.b.a -> cd + ab
+    //   I do cb + ad, which is equivalent. 
+    sum += (srcip >> 24) + ((srcip & 0xff) << 8);
+    sum += (srcip >> 8) & 0xffff;
+    sum += (dstip >> 24) + ((dstip & 0xff) << 8);
+    sum += (dstip >> 8) & 0xffff;
     sum += ip->proto;
     sum += ip->length;
   
     // Add the TCP Header up to the checksum, which we'll skip.
-    for (i=0; i < 14; i += 2) 
-        sum += *(u_short *) (packet + pos + i);
+    for (i=0; i < 16; i += 2) {
+        sum += LE_U_SHORT(packet, pos + i);
+    }
     
     // Skip the checksum.
     pos = pos + i + 2;
     
     // Add the rest of the packet, stopping short of a final odd byte.
     while (pos < header->len - 1) {
-        sum += *(u_short *) (packet + pos);
+        sum += LE_U_SHORT(packet, pos);
         pos += 2;
     }
     // Pad the last, odd byte if present.
     if (pos < header->len) 
         sum += packet[pos] << 8;
 
-    // All the overflow bits should be added to the lower 16.
-    // The max size of an IP packet prevents it from being able to overflow
-    // from adding the overflow.
-    sum = (sum & 0xffff) + (sum >> 16);
+    // All the overflow bits should be added to the lower 16, including the
+    // overflow from adding the overflow.
+    while (sum > 0xffff) {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    // Take the one's compliment (logical not) and we're done.
     return ~sum;
 }
 
-u_char * parse_tcp(bpf_u_int32 pos, const struct pcap_pkthdr *header, 
-                   const u_char *packet, ip_info *ip, udp_info * udp,
-                   config * config) {
+#define TCP_EXPIRE_USECS 500000
+#define __USEC_RES 1000000
+#define is_expired(now, old) (\
+    ((long long) now.tv_sec*__USEC_RES + now.tv_usec) - \
+    ((long long) old.tv_sec*__USEC_RES + old.tv_usec)) > \
+      TCP_EXPIRE_USECS
+
+tcp_info * parse_tcp(bpf_u_int32 pos, const struct pcap_pkthdr *header, 
+                     const u_char *packet, ip_info *ip, udp_info * udp,
+                     config * conf) {
     tcp_info * tcp = malloc(sizeof(tcp_info));
     tcp_info * next;
     int i;
@@ -454,13 +489,23 @@ u_char * parse_tcp(bpf_u_int32 pos, const struct pcap_pkthdr *header,
     u_short checksum;
     u_short actual_checksum;
 
+    tcp->next_sess = NULL;
+    tcp->prev_sess = NULL;
+    tcp->next_pkt = NULL;
+    tcp->last_pkt = tcp;
+    tcp->ts = header->ts;
     tcp->srcip = ip->srcip;
     tcp->dstip = ip->dstip;
     tcp->srcport = LE_U_SHORT(packet, pos);
     tcp->dstport = LE_U_SHORT(packet, pos+2);
     tcp->sequence = LE_U_INT(packet, pos + 4);
     tcp->ack_num = LE_U_INT(packet, pos + 8);
+    tcp->ack = GET_BIT(packet, pos + 13, 5);
+    tcp->syn = GET_BIT(packet, pos + 13, 1);
+    tcp->fin = GET_BIT(packet, pos + 13, 0);
+    tcp->rst = GET_BIT(packet, pos + 13, 2);
     offset = packet[pos + 12] >> 4;
+    printf("Done some.\n");
 
     if ((pos + offset*4) > header->len) {
         fprintf(stderr, "Truncated TCP packet: %d, %d\n", offset, header->len);
@@ -470,56 +515,155 @@ u_char * parse_tcp(bpf_u_int32 pos, const struct pcap_pkthdr *header,
     tcp->len = ip->length - offset*4;
   
     // Ignore packets with a bad checksum
-    checksum = *(u_short *)(packet + pos + 16);
+    checksum = LE_U_SHORT(packet, pos + 16);
     actual_checksum = tcp_checksum(ip, packet, pos, header);
-    fprintf(stderr, "Checksum: 0x%04x, 0x%04x\n", checksum, actual_checksum);
-    /*
-    tcp->data_len = ip->length - offset; 
+    if (checksum != actual_checksum || 
+        // 0xffff and 0x0000 are both equal to zero in one's compliment,
+        // so these are actually the same.
+        (checksum == 0xffff && actual_checksum == 0x0000) ||
+        (checksum == 0x0000 && actual_checksum == 0xffff) ) {
+        // Do Bad Checksum stuff
+        printf("Bad checksum.");
+    } else if (checksum == 0x0000 && tcp->rst) {
+        // Ignore, since it's a reset packet.
+    }
+    
+    printf("Checksummed.\n");
+
+    tcp->data_len = ip->length - offset*4; 
     if (tcp->data_len > 0) {
         tcp->data = malloc(sizeof(char) * (tcp->data_len));
         memcpy(tcp->data, &packet[pos + offset], tcp->data_len);
     } else
         tcp->data = NULL;
 
-    next = TCP_STACK_HEAD;
+    printf("mem copied, bitches.\n");
+    print_tcp(tcp);
+
+    next = conf->tcp_sessions_head;
     while (next) {
-        if ( next->srcip == tcp->srcip &&
-             next->dstip == tcp->dstip &&
+        print_tcp(next);
+        if ( next->srcip.v4.s_addr == tcp->srcip.v4.s_addr &&
+             next->dstip.v4.s_addr == tcp->dstip.v4.s_addr &&
              next->srcport == tcp->srcport &&
              next->dstport == tcp->dstport) {
-            tcp->parent = next;
-            tcp->next = next->next;
-            tcp->prev = next->prev;
-            if (tcp->prev) 
-                tcp->prev->next = tcp;
-            else
-                TCP_STACK_HEAD = tcp;
-            if (tcp->next)
-                tcp->next->prev = tcp;
-            else
-                TCP_STACK_TAIL = tcp;
-            next->next = NULL;
-            next->prev = NULL;
-            next = NULL;
-            found = 1;
-        }
-    }
-     
-    if (!found) {
-        next ->
+           
+            printf("goin on and on. %p, %p\n", next);
+            // Assign the packet to the end of this packet list.
+            next->last_pkt->next_pkt = tcp;
+            next->last_pkt = tcp;
+            printf("not failin yet.\n");
 
-    if (tcp->control & TCP_FIN) {
-        next = tcp;
-        while (next) {
-             
+            // Move 'next' to the head of the sessions list. 
+            if (conf->tcp_sessions_head != next) {
+                conf->tcp_sessions_head->prev_sess = next;
+                if (next->next_sess != NULL) 
+                    next->next_sess->prev_sess = next->prev_sess;
+                if (next->prev_sess != NULL) 
+                    next->prev_sess->next_sess = next->next_sess;
+                next->prev_sess = NULL;
+                next->next_sess = conf->tcp_sessions_head;
+                conf->tcp_sessions_head = next;
+            }
+            break;
+        } 
+        next = next->next_sess;
+    }
+
+    printf("Holy mother of fuck.\n");
     
-                bpf_u_int32 total_data;
-                int seq_ok = 1;
-                int next_seq;
-                while (asnext) {
-                    if asnext->
-    */
-    return NULL;
+    // No matching session found.
+    if (next == NULL) {
+        if (conf->tcp_sessions_head == NULL) {
+            conf->tcp_sessions_head = tcp;
+            conf->tcp_sessions_tail = tcp;
+        } else {
+            conf->tcp_sessions_head->prev_sess = tcp;
+            tcp->next_sess = conf->tcp_sessions_head;
+            conf->tcp_sessions_head = tcp; 
+        }
+        next = tcp;
+    }
+
+    // If this was the last packet in a session, assemble the data.
+    tcp_info * finished = NULL;
+    if (tcp->fin || tcp->rst) {
+        // Assemble the TCP data, as much as we can. This will dispose of
+        // all but the first TCP header object.
+        assemble_tcp(next);
+        next->next_sess = next->prev_sess = NULL;
+
+        // Remove this tcp session from the list. Since we know it's at the
+        // top of the list, this is pretty simple.
+        conf->tcp_sessions_head = next->next_sess;
+        if (conf->tcp_sessions_head != NULL)
+            conf->tcp_sessions_head->prev_sess = NULL;
+        else
+            conf->tcp_sessions_tail = NULL;
+        finished = next;
+    }
+
+    // Expire old sessions, and return them as well.
+    // We're working backwards up the session list. Since the least recently
+    // updated sessions are at the bottom, they should have the oldest 
+    // timestamps.
+    // 'last' is the last session in the list. We need 'prev' because
+    // assembling 'last' will clear it's information about the session list.
+    // 'finished' will be the list of finished sessions that we'll return.
+    tcp_info * last = conf->tcp_sessions_tail;
+    tcp_info * prev;
+    while (last != NULL && is_expired(tcp->ts, last->ts)) {
+        prev = last->prev_sess;
+        assemble_tcp(last);
+        if (finished != NULL) {
+            // Attach additional finished sessions any already existing.
+            finished->next_sess = last;
+            last->prev_sess = finished;
+        }
+
+        finished = last;
+        conf->tcp_sessions_tail = prev;
+        last = prev;
+    }
+
+    return finished;
+}
+
+// Go through the tcp starting at 'base'. Hopefully it will all be there.
+// If it assembles as much as it can. 
+// In doing this all child packets are freed (and their data chunks), 
+// and a allocation is made. This is attached to the 'base' tcp_info object.
+// That tcp_info object has all its point sess and packet pointers set to
+// NULL.
+// It is assumed that the total data portion will fit in memory (twice actually,
+// since the original allocations will be freed after assembly is complete).
+void assemble_tcp(tcp_info * base) {
+    tcp_info *next, *curr, *lookahead;
+    char found_syn = 0;
+    long long data_len = 0;
+
+    curr = base;
+    while (curr) {
+        printf("tcp pkt, seq#: %x, ack#: %x, safr: %d%d%d%d\n",
+               curr->sequence, curr->ack_num, curr->syn, curr->ack,
+               curr->fin, curr->rst);
+    }
+
+    // The first thing we need to do is sort by seq/ack. We'll do this by
+    // proceeding through the list linearly, and scanning ahead to find a 
+    // packet we're missing. Missing packets are a BIG DEAL. We can't tell how
+    // much we're missing, or what order chunks with multiple gaps go in.
+    // Missing packets will cause the loss of all data after the missing pkt.
+    //curr = NULL;
+    //while (1) {
+    //    if (curr 11
+         
+    //}
+}
+
+void print_tcp(tcp_info * tcp) {
+    printf("%s:%d -> %s:%d, \n", inet_ntoa(tcp->srcip.v4), tcp->srcport,
+                                 inet_ntoa(tcp->dstip.v4), tcp->dstport);
 }
 
 bpf_u_int32 parse_questions(bpf_u_int32 pos, bpf_u_int32 id_pos, 
@@ -769,46 +913,18 @@ void print_rr_section(dns_rr * next, char * name, config * conf) {
     }
 }
 
-void handler(u_char * args, const struct pcap_pkthdr *header, 
-             const u_char *packet) {
-    int pos;
-    ip_info ip;
-    udp_info udp;
-    dns_header dns;
-    config * conf = (config *) args;
-
+// Parse and output a packet's DNS data.
+void handle_dns(int pos, const u_char * packet, ip_info * ip, 
+                udp_info * udp, const struct pcap_pkthdr * header, 
+                config * conf) {
     char date[200];
     char proto;
+
+    dns_header dns;
     bpf_u_int32 dnslength;
     dns_rr *next;
     dns_question *qnext;
 
-    #ifdef VERBOSE
-    printf("\nPacket %d.%d\n", header->ts.tv_sec, header->ts.tv_usec);
-    #endif
-
-    pos = parse_eth(header, packet);
-    if (pos == 0) return;
-    pos = parse_ipv4(pos, header, packet, &ip);
-    if ( pos == 0) return;
-    if (ip.proto == 17) {
-        pos = parse_udp(pos, header, packet, &udp, conf);
-        if ( pos == 0 ) return;
-    } else if (ip.proto == 6) {
-        u_char * data;
-        data = parse_tcp(pos, header, packet, &ip, &udp, conf);
-        // The tcp packet was absorbed or erroneous, don't do anything else.
-        if (data == NULL) return;
-        // Forge the packet, 
-        packet = (const u_char *) data;
-        pos = 0;
-        // The header length and time are changed in parse_tcp
-        // A fake udp object is also constructed.
-    } else {
-        fprintf(stderr, "Unsupported Protocol(%d)\n", ip.proto);
-        return;
-    }
-   
     pos = parse_dns(pos, header, packet, &dns, conf);
 
     if (conf->PRETTY_DATE) {
@@ -821,10 +937,10 @@ void handler(u_char * args, const struct pcap_pkthdr *header,
     } else 
         sprintf(date, "%d.%06d", (int)header->ts.tv_sec, (int)header->ts.tv_usec);
    
-    if (ip.proto == 17) {
+    if (ip->proto == 17) {
         proto = 'u';
-        dnslength = udp.length;
-    } else if (ip.proto == 6) {
+        dnslength = udp->length;
+    } else if (ip->proto == 6) {
         proto = 't';
         dnslength = 0;
     } else {    
@@ -834,7 +950,7 @@ void handler(u_char * args, const struct pcap_pkthdr *header,
     
     fflush(stdout);
     printf("%s,%s,%s,%d,%c,%c,%s", date, 
-           inet_ntoa(ip.srcip.v4), inet_ntoa(ip.dstip.v4),
+           inet_ntoa(ip->srcip.v4), inet_ntoa(ip->dstip.v4),
            dnslength, proto, dns.qr ? 'r':'q', dns.AA?"AA":"NA");
     qnext = dns.queries;
     if (qnext != NULL) printf("%cQueries", conf->SEP);
@@ -865,4 +981,45 @@ void handler(u_char * args, const struct pcap_pkthdr *header,
     dns_rr_free(dns.name_servers);
     dns_rr_free(dns.additional);
     fflush(stdout); fflush(stderr);
+}
+
+void handler(u_char * args, const struct pcap_pkthdr *header, 
+             const u_char *packet) {
+    int pos;
+    ip_info ip;
+    udp_info udp;
+    config * conf = (config *) args;
+
+    #ifdef VERBOSE
+    printf("\nPacket %d.%d\n", header->ts.tv_sec, header->ts.tv_usec);
+    #endif
+
+    pos = parse_eth(header, packet);
+    if (pos == 0) return;
+    pos = parse_ipv4(pos, header, packet, &ip);
+    if ( pos == 0) return;
+    if (ip.proto == 17) {
+        pos = parse_udp(pos, header, packet, &udp, conf);
+        if ( pos == 0 ) return;
+        handle_dns(pos, packet, &ip, &udp, header, conf);
+    } else if (ip.proto == 6) {
+        printf("TCP packet.\n");
+        tcp_info * tcp = parse_tcp(pos, header, packet, &ip, &udp, conf);
+        printf("Parsed.\n");
+        // The tcp packet was absorbed or erroneous, don't do anything else.
+        if (tcp == NULL) return;
+        // We may have a chain of completed tcp packets.
+        while (tcp != NULL) {
+            udp.srcport = tcp->srcport;
+            udp.dstport = tcp->dstport;
+            udp.length = tcp->data_len;
+            ip.srcip.v4.s_addr = tcp->srcip.v4.s_addr;
+            ip.dstip.v4.s_addr = tcp->dstip.v4.s_addr;
+            handle_dns(0, tcp->data, &ip, &udp, tcp->header, conf);
+            tcp = tcp->next_sess;
+        }
+    } else {
+        fprintf(stderr, "Unsupported Protocol(%d)\n", ip.proto);
+        return;
+    }
 }
