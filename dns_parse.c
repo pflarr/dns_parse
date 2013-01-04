@@ -62,12 +62,15 @@ typedef struct tcp_info {
     struct tcp_info * next_sess;
     // The previous item in the list of tcp sessions.
     struct tcp_info * prev_sess;
-    // The next packet for this tcp session.
+    // These are for connecting all the packets in a session. The session
+    // pointers above will always point to the most recent packet.
+    // next_pkt and prev_pkt make chronological sense (next_pkt is always 
+    // more recent, and prev_pkt is less), we just hold the chain by the tail.
     struct tcp_info * next_pkt;
-    // The last packet for this tcp session.
-    struct tcp_info * last_pkt;
+    struct tcp_info * prev_pkt;
 } tcp_info;
 
+void inline remove_tcp_pkt(tcp_info *);
 void print_tcp(tcp_info *);
 void assemble_tcp(tcp_info *);
 
@@ -492,7 +495,7 @@ tcp_info * parse_tcp(bpf_u_int32 pos, const struct pcap_pkthdr *header,
     tcp->next_sess = NULL;
     tcp->prev_sess = NULL;
     tcp->next_pkt = NULL;
-    tcp->last_pkt = tcp;
+    tcp->prev_pkt = NULL;
     tcp->ts = header->ts;
     tcp->srcip = ip->srcip;
     tcp->dstip = ip->dstip;
@@ -537,9 +540,9 @@ tcp_info * parse_tcp(bpf_u_int32 pos, const struct pcap_pkthdr *header,
     } else
         tcp->data = NULL;
 
-    printf("mem copied, bitches.\n");
     print_tcp(tcp);
 
+    printf("Finding the matching session.\n");
     next = conf->tcp_sessions_head;
     while (next) {
         print_tcp(next);
@@ -547,12 +550,18 @@ tcp_info * parse_tcp(bpf_u_int32 pos, const struct pcap_pkthdr *header,
              next->dstip.v4.s_addr == tcp->dstip.v4.s_addr &&
              next->srcport == tcp->srcport &&
              next->dstport == tcp->dstport) {
+
+           /*(next->srcip.v4.s_addr == tcp->dstip.v4.s_addr &&
+             next->dstip.v4.s_addr == tcp->srcip.v4.s_addr &&
+             next->srcport == tcp->dstport &&
+             next->dstport == tcp->srcport) { */
            
-            printf("goin on and on. %p, %p\n", next);
-            // Assign the packet to the end of this packet list.
-            next->last_pkt->next_pkt = tcp;
-            next->last_pkt = tcp;
-            printf("not failin yet.\n");
+            printf("Match found:\n  ");
+            print_tcp(next);
+            
+            // Assign this to the packet chain.
+            next->next_pkt = tcp;
+            tcp->prev_pkt = next;
 
             // Move 'next' to the head of the sessions list. 
             if (conf->tcp_sessions_head != next) {
@@ -570,8 +579,6 @@ tcp_info * parse_tcp(bpf_u_int32 pos, const struct pcap_pkthdr *header,
         next = next->next_sess;
     }
 
-    printf("Holy mother of fuck.\n");
-    
     // No matching session found.
     if (next == NULL) {
         if (conf->tcp_sessions_head == NULL) {
@@ -637,17 +644,75 @@ tcp_info * parse_tcp(bpf_u_int32 pos, const struct pcap_pkthdr *header,
 // NULL.
 // It is assumed that the total data portion will fit in memory (twice actually,
 // since the original allocations will be freed after assembly is complete).
-void assemble_tcp(tcp_info * base) {
-    tcp_info *next, *curr, *lookahead;
+tcp_info * assemble_tcp(tcp_info * base) {
+    tcp_info *next, *curr;
     char found_syn = 0;
+    u_int32 syn;
     long long data_len = 0;
 
-    curr = base;
-    while (curr) {
-        printf("tcp pkt, seq#: %x, ack#: %x, safr: %d%d%d%d\n",
-               curr->sequence, curr->ack_num, curr->syn, curr->ack,
-               curr->fin, curr->rst);
+    // All the pieces of data to reassemble.
+    char ** data_chain;
+    size_t dc_i = 0;
+    
+    printf("In TCP_assembly.\n");
+
+    // Figure out the max length of the data chain, and 
+    // set base to be the head of the chain rather than the tail.
+    for (curr=base; curr != NULL; curr = curr->next_pkt) {
+        base = curr;
+        dc_i++
     }
+    data_chain = malloc(sizeof(char *) * dc_i);
+
+    // Find the first syn packet
+    curr = base;
+    while (curr != NULL) {
+        print_tcp(curr);
+        if (curr->syn) {
+            syn = curr->syn_num;
+            break;
+        }
+        curr = curr->next_pkt;
+    }
+
+    // XXX Deal with no syn. or the response chain.
+
+    // Gather all the bits of data, in order. 
+    // The chain is destroyed bit by bit, except for the last tcp object.
+    // The packets should be in order, or close to it, making this approx. 
+    // O(n). In the random order case, it's O(n^2).
+    dc_i = 0;
+    while (base != NULL) {
+        u_char found = 0;
+        curr = base;
+        while (curr != NULL) {
+            if (curr->syn_num == syn) {
+                // If this is the first one, move the starting point.
+                if (curr == base) 
+                    base = base->next;
+
+                data_chain[dc_i] = curr->data;
+                dc_i++;
+                remove_tcp_pkt(curr);
+                
+                // The last current pkt is what we'll return.
+                if (base != NULL) 
+                    free(curr);
+
+                syn++;
+                found = 1;
+                break;
+            }
+            curr = curr->next_pkt;
+        }
+        if (found == 0) {
+            
+        }
+            
+         
+    }
+
+
 
     // The first thing we need to do is sort by seq/ack. We'll do this by
     // proceeding through the list linearly, and scanning ahead to find a 
@@ -659,11 +724,22 @@ void assemble_tcp(tcp_info * base) {
     //    if (curr 11
          
     //}
+    free(data_chain);
+}
+
+void inline remove_tcp_pkt(tcp_info * pkt) {
+    if (pkt->prev_pkt != NULL)
+        pkt->prev_pkt->next_pkt = pkt->next_pkt;
+    if (pkt->next_pkt != NULL)
+        pkt->next_pkt->prev_pkt = pkt->prev_pkt;
 }
 
 void print_tcp(tcp_info * tcp) {
-    printf("%s:%d -> %s:%d, \n", inet_ntoa(tcp->srcip.v4), tcp->srcport,
-                                 inet_ntoa(tcp->dstip.v4), tcp->dstport);
+    printf("%s:%d ", inet_ntoa(tcp->srcip.v4), tcp->srcport);
+    printf("-> %s:%d, seq: %x, ack: %x, safr: %d%d%d%d\n", 
+           inet_ntoa(tcp->dstip.v4), tcp->dstport,
+           tcp->sequence, tcp->ack_num, tcp->syn, tcp->ack,
+           tcp->fin, tcp->rst);
 }
 
 bpf_u_int32 parse_questions(bpf_u_int32 pos, bpf_u_int32 id_pos, 
