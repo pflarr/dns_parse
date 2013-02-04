@@ -60,8 +60,6 @@ typedef struct tcp_info {
     size_t data_len;
     // The next item in the list of tcp sessions.
     struct tcp_info * next_sess;
-    // The previous item in the list of tcp sessions.
-    struct tcp_info * prev_sess;
     // These are for connecting all the packets in a session. The session
     // pointers above will always point to the most recent packet.
     // next_pkt and prev_pkt make chronological sense (next_pkt is always 
@@ -72,7 +70,7 @@ typedef struct tcp_info {
 
 void inline remove_tcp_pkt(tcp_info *);
 void print_tcp(tcp_info *);
-void assemble_tcp(tcp_info *);
+tcp_info * assemble_tcp(tcp_info *);
 
 #define MAX_EXCLUDES 100
 
@@ -90,7 +88,6 @@ typedef struct {
     int PRINT_RR_NAME;
     int MISSING_TYPE_WARNINGS;
     tcp_info * tcp_sessions_head;
-    tcp_info * tcp_sessions_tail;
 } config;
 
 typedef struct dns_question {
@@ -152,8 +149,6 @@ int main(int argc, char **argv) {
     conf.PRINT_RR_NAME = 0;
     conf.MISSING_TYPE_WARNINGS = 0;
     conf.tcp_sessions_head = NULL;
-    conf.tcp_sessions_tail = NULL;
-
 
     c = getopt(argc, argv, OPTIONS);
     while (c != -1) {
@@ -477,15 +472,16 @@ u_short tcp_checksum(ip_info *ip, const u_char *packet,
 #define TCP_EXPIRE_USECS 500000
 #define __USEC_RES 1000000
 #define is_expired(now, old) (\
-    ((long long) now.tv_sec*__USEC_RES + now.tv_usec) - \
-    ((long long) old.tv_sec*__USEC_RES + old.tv_usec)) > \
+    ((long long) (now).tv_sec*__USEC_RES + (now).tv_usec) - \
+    ((long long) (old).tv_sec*__USEC_RES + (old).tv_usec)) > \
       TCP_EXPIRE_USECS
 
 tcp_info * parse_tcp(bpf_u_int32 pos, const struct pcap_pkthdr *header, 
                      const u_char *packet, ip_info *ip, udp_info * udp,
                      config * conf) {
     tcp_info * tcp = malloc(sizeof(tcp_info));
-    tcp_info * next;
+    tcp_info ** next;
+    tcp_info * sess = NULL;
     int i;
     unsigned int offset;
     bpf_u_int32 data_len;
@@ -493,9 +489,7 @@ tcp_info * parse_tcp(bpf_u_int32 pos, const struct pcap_pkthdr *header,
     u_short actual_checksum;
 
     tcp->next_sess = NULL;
-    tcp->prev_sess = NULL;
     tcp->next_pkt = NULL;
-    tcp->prev_pkt = NULL;
     tcp->ts = header->ts;
     tcp->srcip = ip->srcip;
     tcp->dstip = ip->dstip;
@@ -543,53 +537,50 @@ tcp_info * parse_tcp(bpf_u_int32 pos, const struct pcap_pkthdr *header,
     print_tcp(tcp);
 
     printf("Finding the matching session.\n");
-    next = conf->tcp_sessions_head;
-    while (next) {
-        print_tcp(next);
-        if ( next->srcip.v4.s_addr == tcp->srcip.v4.s_addr &&
-             next->dstip.v4.s_addr == tcp->dstip.v4.s_addr &&
-             next->srcport == tcp->srcport &&
-             next->dstport == tcp->dstport) {
-
-           /*(next->srcip.v4.s_addr == tcp->dstip.v4.s_addr &&
-             next->dstip.v4.s_addr == tcp->srcip.v4.s_addr &&
-             next->srcport == tcp->dstport &&
-             next->dstport == tcp->srcport) { */
-           
+    // Keep in mind 'next' is a pointer to the pointer to the next item.
+    // Find a matching session, if we have one. 
+    // We treat sessions as 1-way communications. The other direction
+    // is handled completely separately.
+    next = &(conf->tcp_sessions_head);
+    while (*next) {
+        print_tcp(*next);
+        if ( (*next)->srcip.v4.s_addr == tcp->srcip.v4.s_addr &&
+             (*next)->dstip.v4.s_addr == tcp->dstip.v4.s_addr &&
+             (*next)->srcport == tcp->srcport &&
+             (*next)->dstport == tcp->dstport) {
+            
             printf("Match found:\n  ");
-            print_tcp(next);
+            print_tcp(*next);
             
             // Assign this to the packet chain.
-            next->next_pkt = tcp;
-            tcp->prev_pkt = next;
+            (*next)->next_pkt = tcp;
+            tcp->prev_pkt = *next;
 
             // Move 'next' to the head of the sessions list. 
-            if (conf->tcp_sessions_head != next) {
-                conf->tcp_sessions_head->prev_sess = next;
-                if (next->next_sess != NULL) 
-                    next->next_sess->prev_sess = next->prev_sess;
-                if (next->prev_sess != NULL) 
-                    next->prev_sess->next_sess = next->next_sess;
-                next->prev_sess = NULL;
-                next->next_sess = conf->tcp_sessions_head;
-                conf->tcp_sessions_head = next;
-            }
+            // First remove 'next'. 
+            // sess should point to the actual object
+            sess = *next;
+            // The pointer to the next object should now be set to skip one.
+            *next = sess->next_sess;
+            // Set sess's next pointer to the old head.
+            sess->next_sess = conf->tcp_sessions_head;
+            // Then stick our sess back in as the head of the list.
+            conf->tcp_sessions_head = sess;
+            // We found our session, we're done.
             break;
         } 
-        next = next->next_sess;
+        next = &(*next)->next_sess;
     }
 
     // No matching session found.
-    if (next == NULL) {
+    if (sess == NULL) {
         if (conf->tcp_sessions_head == NULL) {
             conf->tcp_sessions_head = tcp;
-            conf->tcp_sessions_tail = tcp;
         } else {
-            conf->tcp_sessions_head->prev_sess = tcp;
             tcp->next_sess = conf->tcp_sessions_head;
             conf->tcp_sessions_head = tcp; 
         }
-        next = tcp;
+        sess = tcp;
     }
 
     // If this was the last packet in a session, assemble the data.
@@ -597,47 +588,53 @@ tcp_info * parse_tcp(bpf_u_int32 pos, const struct pcap_pkthdr *header,
     if (tcp->fin || tcp->rst) {
         // Assemble the TCP data, as much as we can. This will dispose of
         // all but the first TCP header object.
-        assemble_tcp(next);
-        next->next_sess = next->prev_sess = NULL;
+        assemble_tcp(sess);
+        sess->next_sess = NULL;
 
         // Remove this tcp session from the list. Since we know it's at the
         // top of the list, this is pretty simple.
-        conf->tcp_sessions_head = next->next_sess;
-        if (conf->tcp_sessions_head != NULL)
-            conf->tcp_sessions_head->prev_sess = NULL;
-        else
-            conf->tcp_sessions_tail = NULL;
-        finished = next;
-    }
-
-    // Expire old sessions, and return them as well.
-    // We're working backwards up the session list. Since the least recently
-    // updated sessions are at the bottom, they should have the oldest 
-    // timestamps.
-    // 'last' is the last session in the list. We need 'prev' because
-    // assembling 'last' will clear it's information about the session list.
-    // 'finished' will be the list of finished sessions that we'll return.
-    tcp_info * last = conf->tcp_sessions_tail;
-    tcp_info * prev;
-    while (last != NULL && is_expired(tcp->ts, last->ts)) {
-        prev = last->prev_sess;
-        assemble_tcp(last);
-        if (finished != NULL) {
-            // Attach additional finished sessions any already existing.
-            finished->next_sess = last;
-            last->prev_sess = finished;
-        }
-
-        finished = last;
-        conf->tcp_sessions_tail = prev;
-        last = prev;
+        conf->tcp_sessions_head = sess->next_sess;
+        finished = sess;
     }
 
     return finished;
 }
 
+// Go through the list of tcp sessions and expire any old ones.
+// Each session is put through the assembly process, which does the 
+// best it can (basically up to the first missing packet).
+// Returns a tcp_info pointer that is the head of a list of all expired
+// sessions.
+tcp_info * expire_tcp(config * conf, struct timeval * now ) {
+    tcp_info * ret = NULL;
+    tcp_info ** ptr = &ret;
+    tcp_info ** next = &(conf->tcp_sessions_head);
+
+    while (*next != NULL) {
+        // Check to see if this session is expired based on the time given.
+        if (is_expired(*now, (*next)->ts)) {
+            // Add this session to the list of of returned sessions
+            *ptr = *next;
+            assemble_tcp(*ptr);
+            // Set ptr to point to the where the next expired session
+            // should be added to the list.
+            ptr = &(*ptr)->next_sess;
+            // Clear that pointer.
+            *ptr = NULL;
+            // Remove this session from the main session list.
+            *next = (*next)->next_sess;
+        } else {
+            // Skip this session, it isn't expired.
+            next = &(*next)->next_sess;
+        }
+        
+    }
+
+    return ret;
+}
+
 // Go through the tcp starting at 'base'. Hopefully it will all be there.
-// If it assembles as much as it can. 
+// Otherwise assemble as much as you can. 
 // In doing this all child packets are freed (and their data chunks), 
 // and a allocation is made. This is attached to the 'base' tcp_info object.
 // That tcp_info object has all its point sess and packet pointers set to
@@ -645,86 +642,116 @@ tcp_info * parse_tcp(bpf_u_int32 pos, const struct pcap_pkthdr *header,
 // It is assumed that the total data portion will fit in memory (twice actually,
 // since the original allocations will be freed after assembly is complete).
 tcp_info * assemble_tcp(tcp_info * base) {
-    tcp_info *next, *curr;
-    char found_syn = 0;
-    u_int32 syn;
-    long long data_len = 0;
+    tcp_info **curr;
+    tcp_info *origin = NULL;
+    bpf_u_int32 curr_seq;
+    // We'll keep track of the total size of data to copy.
+    long long total_length = 0;
+    // Where we are in the copying.
+    long long pos = 0;
+    // The actual data pointer for the final data.
+    u_char * final_data;
 
     // All the pieces of data to reassemble.
     char ** data_chain;
+    // The sizes of each piece.
+    bpf_u_int32 * data_lengths;
     size_t dc_i = 0;
+    bpf_u_int32 i;
     
     printf("In TCP_assembly.\n");
 
-    // Figure out the max length of the data chain, and 
-    // set base to be the head of the chain rather than the tail.
-    for (curr=base; curr != NULL; curr = curr->next_pkt) {
-        base = curr;
-        dc_i++
+    // Figure out the max length of the data chain.
+    // Move base along to be the oldest packet, so we can work on this
+    // from the start rather than the end.
+    for (curr=&base; *curr != NULL; curr = &(*curr)->prev_pkt) {
+        dc_i++;
+        base = *curr;
     }
     data_chain = malloc(sizeof(char *) * dc_i);
+    data_lengths = malloc(sizeof(bpf_u_int32) * dc_i);
 
     // Find the first syn packet
-    curr = base;
-    while (curr != NULL) {
-        print_tcp(curr);
-        if (curr->syn) {
-            syn = curr->syn_num;
+    curr = &base;
+    while (*curr != NULL) {
+        print_tcp(*curr);
+        if ((*curr)->syn) {
+            // Make note of this packet, it's the object we'll return.
+            origin = *curr;
+            curr_seq = (*curr)->sequence;
             break;
         }
-        curr = curr->next_pkt;
+        curr = &(*curr)->next_pkt;
     }
-
-    // XXX Deal with no syn. or the response chain.
 
     // Gather all the bits of data, in order. 
     // The chain is destroyed bit by bit, except for the last tcp object.
     // The packets should be in order, or close to it, making this approx. 
     // O(n). In the random order case, it's O(n^2).
+    // Skip all this if the origin is NULL, since we don't have a starting
+    // point anyway.
     dc_i = 0;
-    while (base != NULL) {
-        u_char found = 0;
-        curr = base;
-        while (curr != NULL) {
-            if (curr->syn_num == syn) {
-                // If this is the first one, move the starting point.
-                if (curr == base) 
-                    base = base->next;
+    while (base != NULL && origin != NULL) {
+        // Search for the packet with the next sequence number.
+        while (*curr != NULL && (*curr)->sequence != curr_seq)
+            curr = &(*curr)->next_pkt;
+        
+        if (*curr != NULL) {
+            tcp_info * tmp;
+            // We found a match.
+            // Save the data and it's length.
+            data_chain[dc_i] = (*curr)->data;
+            data_lengths[dc_i] = (*curr)->len;
+            total_length += (*curr)->len;
+            dc_i++;
 
-                data_chain[dc_i] = curr->data;
-                dc_i++;
-                remove_tcp_pkt(curr);
-                
-                // The last current pkt is what we'll return.
-                if (base != NULL) 
-                    free(curr);
-
-                syn++;
-                found = 1;
-                break;
-            }
-            curr = curr->next_pkt;
+            // Remove this packet from the list.
+            tmp = *curr;
+            *curr = (*curr)->next_pkt;
+            // Free that packet object as long as it isn't the origin.
+            if (tmp != origin) 
+                // The data part will be freed separately in a bit.
+                free(tmp);
+ 
+            // Look for the next sequence number.
+            curr_seq++;
+        } else {
+            // We didn't find a match. We're probably done now.
+            break;
         }
-        if (found == 0) {
-            
-        }
-            
-         
+        // Start over from the beginning of the list every time.
+        curr = &base;
     }
 
+    // Free any remaining packet objects and their data.
+    while (base != NULL) {
+        tcp_info * next = base->next_pkt;
+        free(base->data);
+        free(base);
+        base = next;
+    }
 
+    // We never found the start of the session, probably?
+    if (origin == NULL)
+        return NULL;
 
-    // The first thing we need to do is sort by seq/ack. We'll do this by
-    // proceeding through the list linearly, and scanning ahead to find a 
-    // packet we're missing. Missing packets are a BIG DEAL. We can't tell how
-    // much we're missing, or what order chunks with multiple gaps go in.
-    // Missing packets will cause the loss of all data after the missing pkt.
-    //curr = NULL;
-    //while (1) {
-    //    if (curr 11
-         
-    //}
+    // Make the final data struct.
+    //XXX This could be seriously freaking huge. We'll ignore that for now.    
+    // Combine the data
+    final_data = malloc(sizeof(u_char) * total_length);
+    for(i=0; i < dc_i; i++) {
+        memcpy(final_data + pos, data_chain[i], data_lengths[i]);
+        free(data_chain[i]);
+    }
+
     free(data_chain);
+    free(data_lengths);
+
+    // Set the the first packet in the session as our return value.
+    origin->data = final_data;
+    origin->len = total_length;
+
+    return origin;
 }
 
 void inline remove_tcp_pkt(tcp_info * pkt) {
