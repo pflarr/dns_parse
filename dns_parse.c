@@ -10,13 +10,38 @@
 #include "types.h"
 #include "strutils.h"
 
-//#define VERBOSE
-//#define SHOW_RAW
+// Verbosity flags. Switch which function is defined to add or remove
+// various output printfs from the source. These are all for debugging
+// purposes.
+#define VERBOSE(A) A
+//#define VERBOSE(A)
+#define DBG(A) A
+//#define DBG(A)
+#define SHOW_RAW(A) A
+//#define SHOW_RAW(A) 
+
+void * dbg_malloc(size_t size) {
+    void * loc = malloc(size);
+    printf("Mallocing %zu bytes, ptr at %p\n", size, loc);
+    return loc;
+}
+void * dbg_malloc2(size_t size) {
+    void * loc = malloc(size);
+    printf("Mallocing %zu bytes, ptr at %p\n", size, loc);
+    return loc;
+}
+void * dbg_free(void * loc) {
+    printf("Freeing at %p.\n", loc);
+    free(loc);
+}
 
 #define eprintf(format, ...) fprintf(stderr, format, __VA_ARGS__)
 
+// Get the value of the BITth bit from byte offset O bytes from base B.
 #define GET_BIT(B,O,BIT) (unsigned char)(((*(B+O)) & (1 << (BIT))) >> BIT )
+// Get a two byte little endian u_int at base B and offset O.
 #define LE_U_SHORT(B,O) (u_short)((B[O]<<8)+B[O+1])
+// Get a four byte little endian u_int at base B and offset O.
 #define LE_U_INT(B,O) (bpf_u_int32)((B[O]<<24)+(B[O+1]<<16)+(B[O+2]<<8)+B[O+3])
 
 // We'll be passing the 'config' structure * through as the last 
@@ -44,6 +69,7 @@ typedef struct {
 
 typedef struct tcp_info {
     struct timeval ts;
+    unsigned long long id;
     ip_shared srcip;
     ip_shared dstip;
     u_short srcport;
@@ -55,7 +81,6 @@ typedef struct tcp_info {
     u_char ack;
     u_char fin;
     u_char rst;
-    const struct pcap_pkthdr *header;
     u_char * data;
     size_t data_len;
     // The next item in the list of tcp sessions.
@@ -68,9 +93,8 @@ typedef struct tcp_info {
     struct tcp_info * prev_pkt;
 } tcp_info;
 
-void inline remove_tcp_pkt(tcp_info *);
-void print_tcp(tcp_info *);
-tcp_info * assemble_tcp(tcp_info *);
+tcp_info * tcp_assemble(tcp_info *, config *);
+void tcp_print(tcp_info *);
 
 #define MAX_EXCLUDES 100
 
@@ -88,6 +112,8 @@ typedef struct {
     int PRINT_RR_NAME;
     int MISSING_TYPE_WARNINGS;
     tcp_info * tcp_sessions_head;
+    unsigned long long tcps;
+    tcp_info * tcp_all[MAX_TCP_STATE];
 } config;
 
 typedef struct dns_question {
@@ -124,7 +150,7 @@ typedef struct {
     dns_rr * name_servers;
     u_short arcount;
     dns_rr * additional;
-} dns_header;
+} dns_info;
 
 int main(int argc, char **argv) {
     pcap_t * pcap_file;
@@ -138,6 +164,12 @@ int main(int argc, char **argv) {
     int arg_failure = 0;
 
     const char * OPTIONS = "dfhm:Mnurtx:";
+
+    // XXX
+    unsigned long long q;
+    for (q=0; q<MAX_TCP_STATE; q++)
+        conf.tcp_all[q] = NULL;
+    conf.tcps = 0;
 
     // Setting configuration defaults.
     conf.EXCLUDES = 0;
@@ -291,7 +323,22 @@ int main(int argc, char **argv) {
     // need to check this for overflow.
     read = pcap_dispatch(pcap_file, -1, (pcap_handler)handler, 
                          (u_char *) &conf);
-   
+
+    int tcp_left = 0;
+    tcp_info * curr = conf.tcp_sessions_head;
+    while (curr != NULL) {
+        tcp_info * next = curr->next_sess;
+        tcp_info * tmp;
+        while (curr != NULL) {
+            tmp = curr;
+            curr = curr->prev_pkt;
+            dbg_free(tmp->data);
+            dbg_free(tmp);
+            tcp_left++;
+        }
+        curr = next;
+    }
+    DBG(printf("Unexpired TCP sessions: %d\n", tcp_left);)
     if (print_type_freq) print_parser_usage();
     
     return 0;
@@ -311,20 +358,20 @@ void print_packet(const struct pcap_pkthdr *header, const u_char *packet,
 
 void dns_rr_free(dns_rr * rr) {
     if (rr == NULL) return;
-    if (rr->name != NULL) free(rr->name);
-    if (rr->data != NULL) free(rr->data);
+    if (rr->name != NULL) dbg_free(rr->name);
+    if (rr->data != NULL) dbg_free(rr->data);
     dns_rr_free(rr->next);
-    free(rr);
+    dbg_free(rr);
 }
 
 void dns_question_free(dns_question * question) {
     if (question == NULL) return;
-    if (question->name != NULL) free(question->name);
+    if (question->name != NULL) dbg_free(question->name);
     dns_question_free(question->next);
-    free(question);
+    dbg_free(question);
 }
 
-bpf_u_int32 parse_eth(const struct pcap_pkthdr *header, const u_char *packet) {
+bpf_u_int32 eth_parse(const struct pcap_pkthdr *header, const u_char *packet) {
     u_char dstmac[6], srcmac[6];
     bpf_u_int32 pos = 0;
 
@@ -355,16 +402,16 @@ bpf_u_int32 parse_eth(const struct pcap_pkthdr *header, const u_char *packet) {
     }
     pos = pos + 2;
 
-    #ifdef VERBOSE
-    #ifdef SHOW_RAW
-    printf("\neth ");
-    print_packet(header, packet, 0, pos, 18);
-    #endif
-    printf("dstmac: %02x:%02x:%02x:%02x:%02x:%02x, "
-           "srcmac: %02x:%02x:%02x:%02x:%02x:%02x\n",
-           dstmac[0],dstmac[1],dstmac[2],dstmac[3],dstmac[4],dstmac[5],
-           srcmac[0],srcmac[1],srcmac[2],srcmac[3],srcmac[4],srcmac[5]);
-    #endif
+    SHOW_RAW(
+        printf("\neth ");
+        print_packet(header, packet, 0, pos, 18);
+    )
+    VERBOSE(
+        printf("dstmac: %02x:%02x:%02x:%02x:%02x:%02x, "
+               "srcmac: %02x:%02x:%02x:%02x:%02x:%02x\n",
+               dstmac[0],dstmac[1],dstmac[2],dstmac[3],dstmac[4],dstmac[5],
+               srcmac[0],srcmac[1],srcmac[2],srcmac[3],srcmac[4],srcmac[5]);
+    )
     return pos;
 
 }
@@ -388,23 +435,23 @@ bpf_u_int32 parse_ipv4(bpf_u_int32 pos, const struct pcap_pkthdr *header,
     ip->srcip.v4.s_addr = *(in_addr_t *)(packet + pos + 12);
     ip->dstip.v4.s_addr = *(in_addr_t *)(packet + pos + 16);
 
-    #ifdef VERBOSE
-    #ifdef SHOW_RAW
-    printf("\nipv4\n");
-    print_packet(header, packet, pos, pos + 4*h_len, 4);
-    #endif
-    printf("version: %d, length: %d, proto: %d\n", 
-            version, ip->length, ip->proto);
-    printf("srcip: %s, dstip: %s\n", inet_ntoa(ip->srcip.v4),
-                                     inet_ntoa(ip->dstip.v4));
-    #endif
+    SHOW_RAW(
+        printf("\nipv4\n");
+        print_packet(header, packet, pos, pos + 4*h_len, 4);
+    )
+    VERBOSE(
+        printf("version: %d, length: %d, proto: %d\n", 
+                version, ip->length, ip->proto);
+        printf("srcip: %s, ", inet_ntoa(ip->srcip.v4));
+        printf("dstip: %s\n", inet_ntoa(ip->dstip.v4));
+    )
 
     // move the position up past the options section.
     pos = pos + 4*h_len;
     return pos;
 }
 
-bpf_u_int32 parse_udp(bpf_u_int32 pos, const struct pcap_pkthdr *header, 
+bpf_u_int32 udp_parse(bpf_u_int32 pos, const struct pcap_pkthdr *header, 
                       const u_char *packet, udp_info * udp, config * conf) {
     u_short test;
     if (header->len - pos < 8) {
@@ -415,13 +462,9 @@ bpf_u_int32 parse_udp(bpf_u_int32 pos, const struct pcap_pkthdr *header,
     udp->srcport = (packet[pos] << 8) + packet[pos+1];
     udp->dstport = (packet[pos+2] << 8) + packet[pos+3];
     udp->length = (packet[pos+4] << 8) + packet[pos+5];
-    #ifdef VERBOSE
-    #ifdef SHOW_RAW
-    printf("udp\n");
-    print_packet(header, packet, pos, pos, 4);
-    #endif
-    print_packet(header, packet, pos, pos + 8, 4); #endif printf("srcport: %d, dstport: %d, len: %d\n", udp->srcport, udp->dstport, udp->length);
-    #endif
+    VERBOSE(printf("udp\n");)
+    VERBOSE(printf("srcport: %d, dstport: %d, len: %d\n", udp->srcport, udp->dstport, udp->length);)
+    SHOW_RAW(print_packet(header, packet, pos, pos, 4);)
     return pos + 8;
 }
 
@@ -476,20 +519,33 @@ u_short tcp_checksum(ip_info *ip, const u_char *packet,
     ((long long) (old).tv_sec*__USEC_RES + (old).tv_usec)) > \
       TCP_EXPIRE_USECS
 
-tcp_info * parse_tcp(bpf_u_int32 pos, const struct pcap_pkthdr *header, 
-                     const u_char *packet, ip_info *ip, udp_info * udp,
+void tcp_parse(bpf_u_int32 pos, const struct pcap_pkthdr *header, 
+               const u_char *packet, ip_info *ip, udp_info * udp,
                      config * conf) {
-    tcp_info * tcp = malloc(sizeof(tcp_info));
+    // This packet.
+    tcp_info * tcp;
+    // For traversing the session list.
     tcp_info ** next;
+    // Will hold the matching session when we look.
     tcp_info * sess = NULL;
     int i;
     unsigned int offset;
     bpf_u_int32 data_len;
     u_short checksum;
     u_short actual_checksum;
+    
+    tcp = dbg_malloc2(sizeof(tcp_info));
+    conf->tcp_all[conf->tcps] = tcp;
+    tcp->id = conf->tcps;
+    conf->tcps++;
+    if (conf->tcps >= MAX_TCP_STATE) {
+        printf("To many sessions!\n");
+        conf->tcps = 5/0;
+    }
 
     tcp->next_sess = NULL;
     tcp->next_pkt = NULL;
+    tcp->prev_pkt = NULL;
     tcp->ts = header->ts;
     tcp->srcip = ip->srcip;
     tcp->dstip = ip->dstip;
@@ -502,12 +558,12 @@ tcp_info * parse_tcp(bpf_u_int32 pos, const struct pcap_pkthdr *header,
     tcp->fin = GET_BIT(packet, pos + 13, 0);
     tcp->rst = GET_BIT(packet, pos + 13, 2);
     offset = packet[pos + 12] >> 4;
-    printf("Done some.\n");
+    DBG(printf("Done some.\n");)
 
     if ((pos + offset*4) > header->len) {
         fprintf(stderr, "Truncated TCP packet: %d, %d\n", offset, header->len);
-        free(tcp);
-        return NULL;
+        dbg_free(tcp);
+        return;
     }
     tcp->len = ip->length - offset*4;
   
@@ -520,46 +576,56 @@ tcp_info * parse_tcp(bpf_u_int32 pos, const struct pcap_pkthdr *header,
         (checksum == 0xffff && actual_checksum == 0x0000) ||
         (checksum == 0x0000 && actual_checksum == 0xffff) ) {
         // Do Bad Checksum stuff
-        printf("Bad checksum.");
+        DBG(printf("Bad checksum.");)
+        conf->tcp_all[tcp->id] = NULL;
+        dbg_free(tcp);
+        return;
     } else if (checksum == 0x0000 && tcp->rst) {
         // Ignore, since it's a reset packet.
     }
     
-    printf("Checksummed.\n");
+    DBG(printf("Checksummed.\n");)
 
-    tcp->data_len = ip->length - offset*4; 
-    if (tcp->data_len > 0) {
-        tcp->data = malloc(sizeof(char) * (tcp->data_len));
-        memcpy(tcp->data, &packet[pos + offset], tcp->data_len);
+    if (tcp->len > 0) {
+        tcp->data = dbg_malloc(sizeof(char) * (tcp->len));
+        memcpy(tcp->data, &packet[pos + offset], tcp->len);
     } else
         tcp->data = NULL;
 
-    print_tcp(tcp);
+    DBG(printf("This pkt - %p: ", tcp);)
+    DBG(tcp_print(tcp);)
+    DBG(printf("The head - %p: ", conf->tcp_sessions_head);)
+    DBG(tcp_print(conf->tcp_sessions_head));
 
-    printf("Finding the matching session.\n");
+    DBG(printf("Finding the matching session.\n");)
     // Keep in mind 'next' is a pointer to the pointer to the next item.
     // Find a matching session, if we have one. 
     // We treat sessions as 1-way communications. The other direction
     // is handled completely separately.
     next = &(conf->tcp_sessions_head);
-    while (*next) {
-        print_tcp(*next);
+    while (*next != NULL) {
+        DBG(printf("Checking: ");)
+        tcp_print(*next);
         if ( (*next)->srcip.v4.s_addr == tcp->srcip.v4.s_addr &&
              (*next)->dstip.v4.s_addr == tcp->dstip.v4.s_addr &&
              (*next)->srcport == tcp->srcport &&
              (*next)->dstport == tcp->dstport) {
             
-            printf("Match found:\n  ");
-            print_tcp(*next);
-            
-            // Assign this to the packet chain.
-            (*next)->next_pkt = tcp;
-            tcp->prev_pkt = *next;
-
-            // Move 'next' to the head of the sessions list. 
-            // First remove 'next'. 
-            // sess should point to the actual object
+            DBG(printf("Match found:\n  ");)
+            tcp_print(*next);
+           
+            // This is the matching session.
             sess = *next;
+
+            // Assign this to the packet chain.
+            sess->next_pkt = tcp;
+            tcp->prev_pkt = sess;
+            // Since this will be the head, it needs to know where 
+            // the next session is.
+            tcp->next_sess = sess->next_sess;
+            // The current packet is now the head packet of this session.
+            sess = tcp;
+
             // The pointer to the next object should now be set to skip one.
             *next = sess->next_sess;
             // Set sess's next pointer to the old head.
@@ -574,30 +640,22 @@ tcp_info * parse_tcp(bpf_u_int32 pos, const struct pcap_pkthdr *header,
 
     // No matching session found.
     if (sess == NULL) {
-        if (conf->tcp_sessions_head == NULL) {
-            conf->tcp_sessions_head = tcp;
-        } else {
-            tcp->next_sess = conf->tcp_sessions_head;
-            conf->tcp_sessions_head = tcp; 
-        }
-        sess = tcp;
+        DBG(printf("No match found.\n");)
+        tcp->next_sess = conf->tcp_sessions_head;
+        conf->tcp_sessions_head = tcp; 
     }
 
-    // If this was the last packet in a session, assemble the data.
-    tcp_info * finished = NULL;
-    if (tcp->fin || tcp->rst) {
-        // Assemble the TCP data, as much as we can. This will dispose of
-        // all but the first TCP header object.
-        assemble_tcp(sess);
-        sess->next_sess = NULL;
-
-        // Remove this tcp session from the list. Since we know it's at the
-        // top of the list, this is pretty simple.
-        conf->tcp_sessions_head = sess->next_sess;
-        finished = sess;
+    tcp_info * c_next = conf->tcp_sessions_head;
+    bpf_u_int32 sess_total = 0;
+    while (c_next != NULL) {
+        DBG(printf("Sessions[%d] - %p: ", sess_total, c_next);)
+        DBG(tcp_print(c_next);)
+        sess_total++;
+        c_next = c_next->next_sess;
     }
+    DBG(printf("Current sessions in chain: %d\n", sess_total);)
 
-    return finished;
+    return;
 }
 
 // Go through the list of tcp sessions and expire any old ones.
@@ -605,7 +663,7 @@ tcp_info * parse_tcp(bpf_u_int32 pos, const struct pcap_pkthdr *header,
 // best it can (basically up to the first missing packet).
 // Returns a tcp_info pointer that is the head of a list of all expired
 // sessions.
-tcp_info * expire_tcp(config * conf, struct timeval * now ) {
+tcp_info * tcp_expire(config * conf, const struct timeval * now ) {
     tcp_info * ret = NULL;
     tcp_info ** ptr = &ret;
     tcp_info ** next = &(conf->tcp_sessions_head);
@@ -613,22 +671,42 @@ tcp_info * expire_tcp(config * conf, struct timeval * now ) {
     while (*next != NULL) {
         // Check to see if this session is expired based on the time given.
         if (is_expired(*now, (*next)->ts)) {
+            // We need this because we'll probably end up free the 
+            // first packet of the session.
+            tcp_info * next_sess = (*next)->next_sess;
             // Add this session to the list of of returned sessions
-            *ptr = *next;
-            assemble_tcp(*ptr);
+            *ptr = tcp_assemble(*next, conf);
+            // *next is probably freed now, unless it was returned as *ptr.
+             
+            // Remove this session from the main session list.
+            *next = next_sess;
+
+            // If the assembled stream was empty, skip to the next one.
+            DBG(printf("*ptr %p\n", *ptr);)
+            if (*ptr == NULL) {
+                continue;
+            }
+            
             // Set ptr to point to the where the next expired session
             // should be added to the list.
             ptr = &(*ptr)->next_sess;
             // Clear that pointer.
             *ptr = NULL;
-            // Remove this session from the main session list.
-            *next = (*next)->next_sess;
         } else {
             // Skip this session, it isn't expired.
             next = &(*next)->next_sess;
         }
         
     }
+    
+    tcp_info * c_next = ret;
+    bpf_u_int32 sess_total = 0;
+    while (c_next != NULL) {
+        sess_total++;
+        c_next = c_next->next_sess;
+    }
+    DBG(printf("Sessions expired: %d\n", sess_total);)
+
 
     return ret;
 }
@@ -641,7 +719,7 @@ tcp_info * expire_tcp(config * conf, struct timeval * now ) {
 // NULL.
 // It is assumed that the total data portion will fit in memory (twice actually,
 // since the original allocations will be freed after assembly is complete).
-tcp_info * assemble_tcp(tcp_info * base) {
+tcp_info * tcp_assemble(tcp_info * base, config * conf) {
     tcp_info **curr;
     tcp_info *origin = NULL;
     bpf_u_int32 curr_seq;
@@ -659,26 +737,36 @@ tcp_info * assemble_tcp(tcp_info * base) {
     size_t dc_i = 0;
     bpf_u_int32 i;
     
-    printf("In TCP_assembly.\n");
+    DBG(printf("In TCP_assembly.\n");)
+    DBG(printf("Assembling:\n");)
+    DBG(tcp_print(base);)
 
     // Figure out the max length of the data chain.
     // Move base along to be the oldest packet, so we can work on this
     // from the start rather than the end.
+    DBG(printf("In session:");)
     for (curr=&base; *curr != NULL; curr = &(*curr)->prev_pkt) {
+        tcp_print(*curr);
         dc_i++;
         base = *curr;
     }
-    data_chain = malloc(sizeof(char *) * dc_i);
-    data_lengths = malloc(sizeof(bpf_u_int32) * dc_i);
+    DBG(printf("Making the data_chain vars.\n");)
+    data_chain = dbg_malloc(sizeof(char *) * dc_i);
+    data_lengths = dbg_malloc(sizeof(bpf_u_int32) * dc_i);
+    for (i=0; i<dc_i; i++) {
+        data_chain[i] = NULL;
+        data_lengths[i] = 0;
+    }
 
     // Find the first syn packet
     curr = &base;
     while (*curr != NULL) {
-        print_tcp(*curr);
+        tcp_print(*curr);
         if ((*curr)->syn) {
             // Make note of this packet, it's the object we'll return.
             origin = *curr;
             curr_seq = (*curr)->sequence;
+            DBG(printf("Found first sequence #: %u\n", curr_seq);)
             break;
         }
         curr = &(*curr)->next_pkt;
@@ -693,8 +781,11 @@ tcp_info * assemble_tcp(tcp_info * base) {
     dc_i = 0;
     while (base != NULL && origin != NULL) {
         // Search for the packet with the next sequence number.
-        while (*curr != NULL && (*curr)->sequence != curr_seq)
+        while (*curr != NULL && (*curr)->sequence != curr_seq) 
             curr = &(*curr)->next_pkt;
+        
+        DBG(printf("Current assembly packet: ");)
+        tcp_print(*curr);
         
         if (*curr != NULL) {
             tcp_info * tmp;
@@ -709,9 +800,12 @@ tcp_info * assemble_tcp(tcp_info * base) {
             tmp = *curr;
             *curr = (*curr)->next_pkt;
             // Free that packet object as long as it isn't the origin.
-            if (tmp != origin) 
+            if (tmp != origin) {
                 // The data part will be freed separately in a bit.
-                free(tmp);
+                printf("tmp - ");
+                conf->tcp_all[tmp->id] = NULL;
+                dbg_free(tmp);
+            }
  
             // Look for the next sequence number.
             curr_seq++;
@@ -726,47 +820,71 @@ tcp_info * assemble_tcp(tcp_info * base) {
     // Free any remaining packet objects and their data.
     while (base != NULL) {
         tcp_info * next = base->next_pkt;
-        free(base->data);
-        free(base);
+        DBG(printf("Free unused packet:\n");)
+        DBG(tcp_print(base);)
+        conf->tcp_all[base->id] = NULL;
+        dbg_free(base->data);
+        dbg_free(base);
         base = next;
     }
 
-    // We never found the start of the session, probably?
-    if (origin == NULL)
-        return NULL;
+    DBG(printf("Total_length: %lld\n", total_length);)
 
     // Make the final data struct.
-    //XXX This could be seriously freaking huge. We'll ignore that for now.    
-    // Combine the data
-    final_data = malloc(sizeof(u_char) * total_length);
-    for(i=0; i < dc_i; i++) {
-        memcpy(final_data + pos, data_chain[i], data_lengths[i]);
-        free(data_chain[i]);
+    //XXX This could be seriously freaking huge. We'll ignore that for now.
+    //XXX It should be fine, in theory, thanks to virtual memory and big disks,
+    //XXX but it's good this is only DNS data, right?
+    // Combine the data.
+    // We'll skip combining the data, and just free the chain, if there 
+    // isn't any data to deal with.
+    if (total_length > 0) {
+        final_data = dbg_malloc(sizeof(u_char) * total_length);
+        for(i=0; i < dc_i; i++) {
+            if (data_chain[i] != NULL) { 
+                memcpy(final_data + pos, data_chain[i], data_lengths[i]);
+                pos += data_lengths[i];
+                DBG(printf("data_chain[%d] free: ", i);)
+                dbg_free(data_chain[i]);
+            }
+        }
     }
 
-    free(data_chain);
-    free(data_lengths);
+    DBG(printf("data_chain, lengths, free.\n");)
+    dbg_free(data_chain);
+    dbg_free(data_lengths);
+
+    if (total_length == 0) {
+        // There was no data in the session to return.
+        DBG(printf("Empty session:%p.\n", origin);)
+        if (origin != NULL) {
+            conf->tcp_all[origin->id] = NULL;
+            DBG(printf("Bleh\n");)
+            dbg_free(origin);
+        }
+        return NULL;
+    }
 
     // Set the the first packet in the session as our return value.
     origin->data = final_data;
     origin->len = total_length;
 
+    DBG(printf("TCP assembly finished.\n");)
+    DBG(printf("origin - ");) 
+    DBG(tcp_print(origin);)
+
     return origin;
 }
 
-void inline remove_tcp_pkt(tcp_info * pkt) {
-    if (pkt->prev_pkt != NULL)
-        pkt->prev_pkt->next_pkt = pkt->next_pkt;
-    if (pkt->next_pkt != NULL)
-        pkt->next_pkt->prev_pkt = pkt->prev_pkt;
-}
-
-void print_tcp(tcp_info * tcp) {
-    printf("%s:%d ", inet_ntoa(tcp->srcip.v4), tcp->srcport);
-    printf("-> %s:%d, seq: %x, ack: %x, safr: %d%d%d%d\n", 
-           inet_ntoa(tcp->dstip.v4), tcp->dstport,
-           tcp->sequence, tcp->ack_num, tcp->syn, tcp->ack,
-           tcp->fin, tcp->rst);
+void tcp_print(tcp_info * tcp) {
+    if (tcp == NULL) {
+        printf("NULL tcp object\n");
+    } else {
+        printf("id:%llu %s:%d ", tcp->id, inet_ntoa(tcp->srcip.v4), tcp->srcport);
+        printf("-> %s:%d, seq: %x, safr: %d%d%d%d, len: %u\n", 
+               inet_ntoa(tcp->dstip.v4), tcp->dstport,
+               tcp->sequence, tcp->syn, tcp->ack,
+               tcp->fin, tcp->rst, tcp->len);
+    }
 }
 
 bpf_u_int32 parse_questions(bpf_u_int32 pos, bpf_u_int32 id_pos, 
@@ -780,7 +898,7 @@ bpf_u_int32 parse_questions(bpf_u_int32 pos, bpf_u_int32 id_pos,
     *root = NULL;
 
     for (i=0; i < count; i++) {
-        current = malloc(sizeof(dns_question));
+        current = dbg_malloc(sizeof(dns_question));
         current->next = NULL; current->name = NULL;
 
         current->name = read_rr_name(packet, &pos, id_pos, header->len);
@@ -788,7 +906,7 @@ bpf_u_int32 parse_questions(bpf_u_int32 pos, bpf_u_int32 id_pos,
             fprintf(stderr, "DNS question error\n");
             char * buffer = escape_data(packet, start_pos, header->len);
             const char * msg = "Bad DNS question: ";
-            current->name = malloc(sizeof(char) * (strlen(buffer) +
+            current->name = dbg_malloc(sizeof(char) * (strlen(buffer) +
                                                    strlen(msg) + 1));
             sprintf(current->name, "%s%s", msg, buffer);
             current->type = 0;
@@ -805,10 +923,8 @@ bpf_u_int32 parse_questions(bpf_u_int32 pos, bpf_u_int32 id_pos,
         last = current;
         pos = pos + 4;
 
-        #ifdef VERBOSE
-        printf("question->name: %s\n", current->name);
-        printf("type %d, cls %d\n", current->type, current->cls);
-        #endif
+        VERBOSE(printf("question->name: %s\n", current->name);)
+        VERBOSE(printf("type %d, cls %d\n", current->type, current->cls);)
    }
     
     return pos;
@@ -834,7 +950,7 @@ bpf_u_int32 parse_rr(bpf_u_int32 pos, bpf_u_int32 id_pos,
     // We still want to print the rest of the escaped rr data.
     if (rr->name == NULL) {
         const char * msg = "Bad rr name: ";
-        rr->name = malloc(sizeof(char) * (strlen(msg) + 1));
+        rr->name = dbg_malloc(sizeof(char) * (strlen(msg) + 1));
         sprintf(rr->name, "%s", "Bad rr name");
         rr->type = 0;
         rr->rr_name = NULL;
@@ -869,9 +985,7 @@ bpf_u_int32 parse_rr(bpf_u_int32 pos, bpf_u_int32 id_pos,
             pos = pos + 10;
     }
 
-    #ifdef VERBOSE
-    printf("Applying RR parser: %s\n", parser->name);
-    #endif
+    VERBOSE(printf("Applying RR parser: %s\n", parser->name);)
 
     if (conf->MISSING_TYPE_WARNINGS && &default_rr_parser == parser) 
         fprintf(stderr, "Missing parser for class %d, type %d\n", 
@@ -881,20 +995,20 @@ bpf_u_int32 parse_rr(bpf_u_int32 pos, bpf_u_int32 id_pos,
         char * buffer;
         const char * msg = "Truncated rr: ";
         rr->data = escape_data(packet, rr_start, header->len);
-        buffer = malloc(sizeof(char) * (strlen(rr->data) + strlen(msg) + 1));
+        buffer = dbg_malloc(sizeof(char) * (strlen(rr->data) + strlen(msg) + 1));
         sprintf(buffer, "%s%s", msg, rr->data);
-        free(rr->data);
+        dbg_free(rr->data);
         rr->data = buffer;
         return 0;
     }
     rr->data = parser->parser(packet, pos, id_pos, rr->rdlength, 
                               header->len);
-    #ifdef VERBOSE
+    VERBOSE(
     printf("rr->name: %s\n", rr->name);
     printf("type %d, cls %d, ttl %d, len %d\n", rr->type, rr->cls, rr->ttl,
            rr->rdlength);
     printf("rr->data %s\n", rr->data);
-    #endif
+    )
 
     return pos + rr->rdlength;
 }
@@ -908,7 +1022,7 @@ bpf_u_int32 parse_rr_set(bpf_u_int32 pos, bpf_u_int32 id_pos,
     u_short i;
     *root = NULL; 
     for (i=0; i < count; i++) {
-        current = malloc(sizeof(dns_rr));
+        current = dbg_malloc(sizeof(dns_rr));
         current->next = NULL; current->name = NULL; current->data = NULL;
         
         pos = parse_rr(pos, id_pos, header, packet, current, conf);
@@ -926,20 +1040,22 @@ bpf_u_int32 parse_rr_set(bpf_u_int32 pos, bpf_u_int32 id_pos,
     return pos;
 }
 
-bpf_u_int32 parse_dns(bpf_u_int32 pos, const struct pcap_pkthdr *header, 
-                      const u_char *packet, dns_header * dns,
+bpf_u_int32 dns_parse(bpf_u_int32 pos, const struct pcap_pkthdr *header, 
+                      const u_char *packet, dns_info * dns,
                       config * conf) {
     
     int i;
     bpf_u_int32 id_pos = pos;
     dns_rr * last = NULL;
 
+    DBG(printf("Huh\n");)
     if (header->len - pos < 12) {
+        printf("header length: %d\n", header->len);
         char * msg = escape_data(packet, id_pos, header->len);
         fprintf(stderr, "Truncated Packet(dns): %s\n", msg); 
         return 0;
     }
-
+    
     dns->id = (packet[pos] << 8) + packet[pos+1];
     dns->qr = packet[pos+2] >> 7;
     dns->AA = (packet[pos+2] & 0x04) >> 2;
@@ -961,16 +1077,16 @@ bpf_u_int32 parse_dns(bpf_u_int32 pos, const struct pcap_pkthdr *header,
     dns->nscount = (packet[pos+8] << 8) + packet[pos+9];
     dns->arcount = (packet[pos+10] << 8) + packet[pos+11];
 
-    #ifdef VERBOSE
-    #ifdef SHOW_RAW
-    printf("dns\n");
-    print_packet(header, packet, pos, header->len, 2);
-    #endif
-    printf("DNS id:%d, qr:%d, AA:%d, TC:%d, rcode:%d\n", 
-           dns->id, dns->qr, dns->AA, dns->TC, dns->rcode);
-    printf("DNS qdcount:%d, ancount:%d, nscount:%d, arcount:%d\n",
-           dns->qdcount, dns->ancount, dns->nscount, dns->arcount);
-    #endif
+    SHOW_RAW(
+        printf("dns\n");
+        print_packet(header, packet, pos, header->len, 2);
+    )
+    VERBOSE(
+        printf("DNS id:%d, qr:%d, AA:%d, TC:%d, rcode:%d\n", 
+               dns->id, dns->qr, dns->AA, dns->TC, dns->rcode);
+        printf("DNS qdcount:%d, ancount:%d, nscount:%d, arcount:%d\n",
+               dns->qdcount, dns->ancount, dns->nscount, dns->arcount);
+    )
 
     pos = parse_questions(pos+12, id_pos, header, packet, 
                           dns->qdcount, &(dns->queries));
@@ -1017,18 +1133,17 @@ void print_rr_section(dns_rr * next, char * name, config * conf) {
 }
 
 // Parse and output a packet's DNS data.
-void handle_dns(int pos, const u_char * packet, ip_info * ip, 
-                udp_info * udp, const struct pcap_pkthdr * header, 
-                config * conf) {
+void print_summary(ip_info * ip, udp_info * udp, dns_info * dns,
+                   const struct pcap_pkthdr * header, config * conf) {
     char date[200];
     char proto;
 
-    dns_header dns;
     bpf_u_int32 dnslength;
     dns_rr *next;
     dns_question *qnext;
 
-    pos = parse_dns(pos, header, packet, &dns, conf);
+    DBG(printf("parsing DNS\n");)
+    DBG(printf("Done parsing DNS\n");)
 
     if (conf->PRETTY_DATE) {
         struct tm *time;
@@ -1038,7 +1153,8 @@ void handle_dns(int pos, const u_char * packet, ip_info * ip,
         result = strftime(date, 200, format, time);
         if (result == 0) strncpy(date, "Date format error", 20);
     } else 
-        sprintf(date, "%d.%06d", (int)header->ts.tv_sec, (int)header->ts.tv_usec);
+        sprintf(date, "%d.%06d", (int)header->ts.tv_sec, 
+                                 (int)header->ts.tv_usec);
    
     if (ip->proto == 17) {
         proto = 'u';
@@ -1052,10 +1168,10 @@ void handle_dns(int pos, const u_char * packet, ip_info * ip,
     }
     
     fflush(stdout);
-    printf("%s,%s,%s,%d,%c,%c,%s", date, 
-           inet_ntoa(ip->srcip.v4), inet_ntoa(ip->dstip.v4),
-           dnslength, proto, dns.qr ? 'r':'q', dns.AA?"AA":"NA");
-    qnext = dns.queries;
+    printf("%s,%s,", date, inet_ntoa(ip->srcip.v4));
+    printf("%s,%d,%c,%c,%s", inet_ntoa(ip->dstip.v4),
+           dnslength, proto, dns->qr ? 'r':'q', dns->AA?"AA":"NA");
+    qnext = dns->queries;
     if (qnext != NULL) printf("%cQueries", conf->SEP);
     while (qnext != NULL) {
         if (conf->PRINT_RR_NAME) {
@@ -1072,17 +1188,17 @@ void handle_dns(int pos, const u_char * packet, ip_info * ip,
                                  qnext->cls);
         qnext = qnext->next; 
     }
-    print_rr_section(dns.answers, "Answers", conf);
+    print_rr_section(dns->answers, "Answers", conf);
     if (conf->NS_ENABLED) 
-        print_rr_section(dns.name_servers, "Name Servers", conf);
+        print_rr_section(dns->name_servers, "Name Servers", conf);
     if (conf->AD_ENABLED) 
-        print_rr_section(dns.additional, "Additional", conf);
+        print_rr_section(dns->additional, "Additional", conf);
     printf("%c%s\n", conf->SEP, conf->RECORD_SEP);
     
-    dns_question_free(dns.queries);
-    dns_rr_free(dns.answers);
-    dns_rr_free(dns.name_servers);
-    dns_rr_free(dns.additional);
+    dns_question_free(dns->queries);
+    dns_rr_free(dns->answers);
+    dns_rr_free(dns->name_servers);
+    dns_rr_free(dns->additional);
     fflush(stdout); fflush(stderr);
 }
 
@@ -1092,37 +1208,57 @@ void handler(u_char * args, const struct pcap_pkthdr *header,
     ip_info ip;
     udp_info udp;
     config * conf = (config *) args;
+    
+    VERBOSE(printf("\nPacket %llu.%llu\n", 
+                   (unsigned long long)header->ts.tv_sec, 
+                   (unsigned long long)header->ts.tv_usec);)
 
-    #ifdef VERBOSE
-    printf("\nPacket %d.%d\n", header->ts.tv_sec, header->ts.tv_usec);
-    #endif
-
-    pos = parse_eth(header, packet);
+    pos = eth_parse(header, packet);
     if (pos == 0) return;
     pos = parse_ipv4(pos, header, packet, &ip);
     if ( pos == 0) return;
     if (ip.proto == 17) {
-        pos = parse_udp(pos, header, packet, &udp, conf);
+        dns_info dns;
+        pos = udp_parse(pos, header, packet, &udp, conf);
         if ( pos == 0 ) return;
-        handle_dns(pos, packet, &ip, &udp, header, conf);
+        pos = dns_parse(pos, header, packet, &dns, conf);
+        print_summary(&ip, &udp, &dns, header, conf);
     } else if (ip.proto == 6) {
-        printf("TCP packet.\n");
-        tcp_info * tcp = parse_tcp(pos, header, packet, &ip, &udp, conf);
-        printf("Parsed.\n");
-        // The tcp packet was absorbed or erroneous, don't do anything else.
-        if (tcp == NULL) return;
-        // We may have a chain of completed tcp packets.
-        while (tcp != NULL) {
-            udp.srcport = tcp->srcport;
-            udp.dstport = tcp->dstport;
-            udp.length = tcp->data_len;
-            ip.srcip.v4.s_addr = tcp->srcip.v4.s_addr;
-            ip.dstip.v4.s_addr = tcp->dstip.v4.s_addr;
-            handle_dns(0, tcp->data, &ip, &udp, tcp->header, conf);
-            tcp = tcp->next_sess;
-        }
+        DBG(printf("TCP packet.\n");)
+        // This doesn't return anything. We parse sessions as they expire,
+        // not as they complete.
+        tcp_parse(pos, header, packet, &ip, &udp, conf); 
+        DBG(printf("Done parsing TCP.\n");)
     } else {
         fprintf(stderr, "Unsupported Protocol(%d)\n", ip.proto);
         return;
     }
+   
+    // Get any complete or expired TCP sessions.
+    DBG(printf("Expiring TCP.\n");)
+    tcp_info * tcp = tcp_expire(conf, &header->ts);
+    while (tcp != NULL) {
+        dns_info dns;
+        tcp_info * tmp;
+        struct pcap_pkthdr fake_header;
+        fake_header.ts = tcp->ts;
+        fake_header.caplen = tcp->len;
+        fake_header.len = tcp->len;
+        udp.srcport = tcp->srcport;
+        udp.dstport = tcp->dstport;
+        udp.length = tcp->len;
+        ip.srcip.v4.s_addr = tcp->srcip.v4.s_addr;
+        ip.dstip.v4.s_addr = tcp->dstip.v4.s_addr;
+        DBG(printf("Parsing DNS (TCP).\n");)
+        pos = dns_parse(0, &fake_header, tcp->data, &dns, conf);
+        DBG(printf("Printing summary (TCP).\n");)
+        print_summary(&ip, &udp, &dns, &fake_header, conf);
+        DBG(printf("Done with summary (TCP).\n");)
+        tmp = tcp;
+        tcp = tcp->next_sess;
+        dbg_free(tmp->data);
+        conf->tcp_all[tmp->id] = NULL;
+        dbg_free(tmp);
+    }
+    DBG(printf("Done with packet.\n");)
 }
