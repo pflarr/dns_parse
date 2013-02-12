@@ -301,6 +301,8 @@ inline int count_parsers() {
     return sizeof(rr_parsers)/sizeof(rr_parser_container);
 }
 
+// We occasionally sort the parsers according to how they're used in order
+// to speed up lookups.
 void sort_parsers() {
     int m,n;
     int change = 1;
@@ -316,6 +318,10 @@ void sort_parsers() {
                 change = 1;
             }
         }
+    }
+    // Reset the counts
+    for (m = 0; m < pcount - 1; m++) {
+        rr_parsers[m].count = 0;
     }
 }
 
