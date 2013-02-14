@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sys/stat.h>
 
 #include "rtypes.h"
 #include "types.h"
@@ -16,8 +17,8 @@
 // purposes.
 //#define VERBOSE(A) A
 #define VERBOSE(A)
-//#define DBG(A) A fflush(stdout);
-#define DBG(A)
+#define DBG(A) A fflush(stdout);
+//#define DBG(A)
 //#define SHOW_RAW(A) A
 #define SHOW_RAW(A) 
 
@@ -31,11 +32,6 @@
 #define LE_U_INT(B,O) (bpf_u_int32)((B[O]<<24)+(B[O+1]<<16)+(B[O+2]<<8)+B[O+3])
 // Get the DNS tcp length prepended field.
 #define TCP_DNS_LEN(P,O) ((P[O]<<8) + P[O+1])
-
-void dbg_free(void * ptr) {
-//    printf("Freeing %p\n", ptr);
-    free(ptr);
-}
 
 // We'll be passing the 'config' structure * through as the last 
 // argument in a pretty hackish way.
@@ -74,13 +70,13 @@ typedef struct tcp_info {
     u_short dstport;
     bpf_u_int32 sequence;
     bpf_u_int32 ack_num;
+    // The length of the data portion.
     bpf_u_int32 len;
     u_char syn;
     u_char ack;
     u_char fin;
     u_char rst;
     u_char * data;
-    size_t data_len;
     // The next item in the list of tcp sessions.
     struct tcp_info * next_sess;
     // These are for connecting all the packets in a session. The session
@@ -95,6 +91,7 @@ tcp_info * tcp_assemble(tcp_info *);
 void tcp_print(tcp_info *);
 
 #define MAX_EXCLUDES 100
+#define DEFAULT_TCP_STATE_PATH "/tmp/dnsparse_tcp.state"
 
 // Globals passed in via the command line.
 // I don't really want these to be globals, but libpcap doesn't really 
@@ -109,8 +106,12 @@ typedef struct {
     int PRETTY_DATE;
     int PRINT_RR_NAME;
     int MISSING_TYPE_WARNINGS;
+    char * TCP_STATE_PATH;
     tcp_info * tcp_sessions_head;
 } config;
+
+void tcp_save_state(config *);
+tcp_info * tcp_load_state(config *);
 
 typedef struct dns_question {
     char * name;
@@ -159,7 +160,7 @@ int main(int argc, char **argv) {
     int print_type_freq = 0;
     int arg_failure = 0;
 
-    const char * OPTIONS = "dfhm:Mnurtx:";
+    const char * OPTIONS = "dfhm:Mnurtx:s:";
 
     // Setting configuration defaults.
     conf.EXCLUDES = 0;
@@ -170,7 +171,7 @@ int main(int argc, char **argv) {
     conf.PRETTY_DATE = 0;
     conf.PRINT_RR_NAME = 0;
     conf.MISSING_TYPE_WARNINGS = 0;
-    conf.tcp_sessions_head = NULL;
+    conf.TCP_STATE_PATH = NULL;
 
     c = getopt(argc, argv, OPTIONS);
     while (c != -1) {
@@ -193,6 +194,9 @@ int main(int argc, char **argv) {
                 break;
             case 'r':
                 conf.PRINT_RR_NAME = 1;
+                break;
+            case 's':
+                conf.TCP_STATE_PATH = optarg;
                 break;
             case 't':
                 conf.PRETTY_DATE = 1; 
@@ -234,6 +238,10 @@ int main(int argc, char **argv) {
         c = getopt(argc, argv, OPTIONS);
     }
 
+    if (conf.TCP_STATE_PATH == NULL) {
+        conf.TCP_STATE_PATH = DEFAULT_TCP_STATE_PATH;
+    }
+
     if (optind == argc - 1) {
         pcap_file = pcap_open_offline(argv[optind], errbuf);
         if (pcap_file == NULL) {
@@ -250,7 +258,8 @@ int main(int argc, char **argv) {
     
     if (arg_failure) {
         fprintf(stderr,
-        "Usage: dns_parse [-dnthf] [-m<query sep.>] [-x<rtype>] <pcap file>\n"
+        "Usage: dns_parse [-dnthf] [-m<query sep.>] [-x<rtype>] [-s<path>]\n"
+        "                 <pcap file>\n"
         "dns_parse parses a pcap file and gives a nicely "
         "formatted ascii string for each dns request.\n"
         "By default the reservation records are tab separated "
@@ -285,7 +294,7 @@ int main(int argc, char **argv) {
         "-n\n"
         "   Enable the parsing and output of the Name Server\n"
         "   Records section. Disabled by default.\n"
-        "-m \n"
+        "-m<sep> \n"
         "   Multiline mode. Reservation records are newline\n"
         "   separated, and the whole record ends with the\n"
         "   separator given.\n"
@@ -297,6 +306,11 @@ int main(int argc, char **argv) {
         "   <name> <rr_type_name> <rdata>\n"
         "   If the record type isn't known, 'UNKNOWN(<cls>,<type>)' is given\n"
         "   The query record format is the similar, but missing the rdata.\n"
+        "-s<path> \n"
+        "   Path to the tcp state save file. \n"
+        "   This will be loaded (and overwritten) every time dns_parse \n"
+        "   is run. \n"
+        "   Default is: %s \n"
         "-t \n"
         "   Print the time/date as in Y/M/D H:M:S format.\n"
         "   The time will be in the local timezone.\n"
@@ -305,39 +319,26 @@ int main(int argc, char **argv) {
         "   record occurred via stderr when processing completes.\n"
         "-x\n"
         "   Exclude the given reservation record types by \n"
-        "   number. This option can be given multiple times.\n"
-                        );
+        "   number. This option can be given multiple times.\n",
+        DEFAULT_TCP_STATE_PATH);
         return -1;
     }
+
+    // Load and prior TCP session info
+    conf.tcp_sessions_head = NULL;// tcp_load_state(&conf);
  
     // need to check this for overflow.
     read = pcap_dispatch(pcap_file, -1, (pcap_handler)handler, 
                          (u_char *) &conf);
+    tcp_save_state(&conf);
 
-    int tcp_left = 0;
-    tcp_info * curr = conf.tcp_sessions_head;
-    while (curr != NULL) {
-        tcp_info * next = curr->next_sess;
-        tcp_info * tmp;
-        while (curr != NULL) {
-            tmp = curr;
-            curr = curr->prev_pkt;
-            dbg_free(tmp->data);
-            dbg_free(tmp);
-            tcp_left++;
-        }
-        curr = next;
-    }
-    DBG(printf("Unexpired TCP sessions: %d\n", tcp_left);)
-    if (print_type_freq) print_parser_usage();
-    
     return 0;
 }
 
-void print_packet(const struct pcap_pkthdr *header, const u_char *packet,
+void print_packet(bpf_u_int32 max_len, const u_char *packet,
                   bpf_u_int32 start, bpf_u_int32 end, u_int wrap) {
     int i=0;
-    while (i < end - start && (i + start) < header->len) {
+    while (i < end - start && (i + start) < max_len) {
         printf("%02x ", packet[i+start]);
         i++;
         if ( i % wrap == 0) printf("\n");
@@ -348,17 +349,17 @@ void print_packet(const struct pcap_pkthdr *header, const u_char *packet,
 
 void dns_rr_free(dns_rr * rr) {
     if (rr == NULL) return;
-    if (rr->name != NULL) dbg_free(rr->name);
-    if (rr->data != NULL) dbg_free(rr->data);
+    if (rr->name != NULL) free(rr->name);
+    if (rr->data != NULL) free(rr->data);
     dns_rr_free(rr->next);
-    dbg_free(rr);
+    free(rr);
 }
 
 void dns_question_free(dns_question * question) {
     if (question == NULL) return;
-    if (question->name != NULL) dbg_free(question->name);
+    if (question->name != NULL) free(question->name);
     dns_question_free(question->next);
-    dbg_free(question);
+    free(question);
 }
 
 bpf_u_int32 eth_parse(const struct pcap_pkthdr *header, const u_char *packet) {
@@ -394,7 +395,7 @@ bpf_u_int32 eth_parse(const struct pcap_pkthdr *header, const u_char *packet) {
 
     SHOW_RAW(
         printf("\neth ");
-        print_packet(header, packet, 0, pos, 18);
+        print_packet(header->len, packet, 0, pos, 18);
     )
     VERBOSE(
         printf("dstmac: %02x:%02x:%02x:%02x:%02x:%02x, "
@@ -427,7 +428,7 @@ bpf_u_int32 parse_ipv4(bpf_u_int32 pos, const struct pcap_pkthdr *header,
 
     SHOW_RAW(
         printf("\nipv4\n");
-        print_packet(header, packet, pos, pos + 4*h_len, 4);
+        print_packet(header->len, packet, pos, pos + 4*h_len, 4);
     )
     VERBOSE(
         printf("version: %d, length: %d, proto: %d\n", 
@@ -456,7 +457,7 @@ bpf_u_int32 udp_parse(bpf_u_int32 pos, const struct pcap_pkthdr *header,
     udp->transport = UDP;
     VERBOSE(printf("udp\n");)
     VERBOSE(printf("srcport: %d, dstport: %d, len: %d\n", udp->srcport, udp->dstport, udp->length);)
-    SHOW_RAW(print_packet(header, packet, pos, pos, 4);)
+    SHOW_RAW(print_packet(header->len, packet, pos, pos, 4);)
     return pos + 8;
 }
 
@@ -546,7 +547,7 @@ void tcp_parse(bpf_u_int32 pos, const struct pcap_pkthdr *header,
 
     if ((pos + offset*4) > header->len) {
         fprintf(stderr, "Truncated TCP packet: %d, %d\n", offset, header->len);
-        dbg_free(tcp);
+        free(tcp);
         return;
     }
     tcp->len = ip->length - offset*4;
@@ -561,7 +562,7 @@ void tcp_parse(bpf_u_int32 pos, const struct pcap_pkthdr *header,
         (checksum == 0x0000 && actual_checksum == 0xffff) ) {
         // Do Bad Checksum stuff
         DBG(printf("Bad checksum.");)
-        dbg_free(tcp);
+        free(tcp);
         return;
     } else if (checksum == 0x0000 && tcp->rst) {
         // Ignore, since it's a reset packet.
@@ -658,6 +659,7 @@ tcp_info * tcp_expire(config * conf, const struct timeval * now ) {
             // first packet of the session.
             tcp_info * next_sess = (*next)->next_sess;
             // Add this session to the list of of returned sessions
+            
             *ptr = tcp_assemble(*next);
             // *next is probably freed now, unless it was returned as *ptr.
              
@@ -752,6 +754,16 @@ tcp_info * tcp_assemble(tcp_info * base) {
         }
         curr = &(*curr)->next_pkt;
     }
+    
+    if (origin == NULL) {
+        // If we fail to find the syn packet, use the earliest packet.
+        // This means we might jump in in the middle of a session, but
+        // we may still be able to pull out some DNS data if we're lucky.
+        origin = base;
+        curr_seq = base->sequence;
+        printf("This one.");
+        tcp_print(origin);
+    }
 
     // Gather all the bits of data, in order. 
     // The chain is destroyed bit by bit, except for the last tcp object.
@@ -793,10 +805,7 @@ tcp_info * tcp_assemble(tcp_info * base) {
             DBG(printf("Current assembly packet: ");)
             DBG(tcp_print(*curr);)
             tcp_info * tmp;
-            struct pcap_pkthdr fakeit; //XXX
-            fakeit.len = (*curr)->len;
-            DBG(print_packet((const struct pcap_pkthdr *)&fakeit,
-                             (*curr)->data, 0, (*curr)->len, 8);)
+            DBG(print_packet((*curr)->len, (*curr)->data, 0, (*curr)->len, 8);)
             // We found a match.
             // Save the data and it's length.
             data_chain[dc_i] = (*curr)->data;
@@ -818,7 +827,7 @@ tcp_info * tcp_assemble(tcp_info * base) {
             // Free that packet object as long as it isn't the origin.
             if (tmp != origin) {
                 // The data part will be freed separately in a bit.
-                dbg_free(tmp);
+                free(tmp);
             }
 
         } else {
@@ -834,8 +843,8 @@ tcp_info * tcp_assemble(tcp_info * base) {
         tcp_info * next = base->next_pkt;
         DBG(printf("Free unused packet:\n");)
         DBG(tcp_print(base);)
-        dbg_free(base->data);
-        dbg_free(base);
+        free(base->data);
+        free(base);
         base = next;
     }
 
@@ -855,21 +864,21 @@ tcp_info * tcp_assemble(tcp_info * base) {
                 memcpy(final_data + pos, data_chain[i], data_lengths[i]);
                 pos += data_lengths[i];
                 DBG(printf("data_chain[%d] free: ", i);)
-                dbg_free(data_chain[i]);
+                free(data_chain[i]);
             }
         }
     }
 
     DBG(printf("data_chain, lengths, free.\n");)
-    dbg_free(data_chain);
-    dbg_free(data_lengths);
+    free(data_chain);
+    free(data_lengths);
 
     if (total_length == 0) {
         // There was no data in the session to return.
         DBG(printf("Empty session:%p.\n", origin);)
         if (origin != NULL) {
             DBG(printf("Bleh\n");)
-            dbg_free(origin);
+            free(origin);
         }
         return NULL;
     }
@@ -883,6 +892,112 @@ tcp_info * tcp_assemble(tcp_info * base) {
     DBG(tcp_print(origin);)
 
     return origin;
+}
+
+void tcp_save_state(config * conf) {
+    FILE * outfile = fopen(conf->TCP_STATE_PATH,"w");
+    tcp_info * next = conf->tcp_sessions_head;
+    tcp_info * curr_pkt;
+
+    if (outfile == NULL) {
+        fprintf(stderr, "Could not open tcp state file.\n");
+        fclose(outfile);
+        return;
+    }
+
+    while (next != NULL) {
+        curr_pkt = next;
+        next = next->next_sess;
+        while (curr_pkt != NULL) {
+            tcp_info * prev_pkt = curr_pkt->prev_pkt;
+            u_char * data = curr_pkt->data;
+            size_t written;
+            // Clear all or pointers, or turn them into flags.
+            curr_pkt->next_sess = NULL;
+            curr_pkt->next_pkt = NULL;
+            // All we need to know is whether there is a prev. packet.
+            curr_pkt->prev_pkt = (prev_pkt == NULL) ? (NULL+1) : NULL;
+            curr_pkt->data = NULL;
+            written = fwrite(curr_pkt, sizeof(tcp_info), 1, outfile);
+            if (written != 1) {
+                printf("writtin, size: %lu, %lu\n", written, sizeof(tcp_info));
+                fprintf(stderr, "Could not write to tcp state file.\n");
+                fclose(outfile);
+                return;
+            }
+            written = fwrite(data, sizeof(u_char), curr_pkt->len, outfile);
+            if (written != curr_pkt->len) {
+                printf("writtin, size: %lu, %lu\n", written, sizeof(u_char)*curr_pkt->len);
+                fprintf(stderr, "Could not write to tcp state file(data).\n");
+                fclose(outfile);
+                return;
+            }
+            curr_pkt = prev_pkt;
+        }
+    }
+    fclose(outfile);
+}
+
+tcp_info * tcp_load_state(config * conf) {
+    FILE * infile;
+    struct stat i_stat;
+    int ret = stat(conf->TCP_STATE_PATH, &i_stat);
+    size_t read;
+    tcp_info * pkt;
+    tcp_info * prev = NULL;
+    tcp_info * first_sess = NULL;
+    tcp_info ** sess = &first_sess;
+    int has_prev = 0;
+ 
+    if (ret != 0) {
+        // No prior state file.
+        fprintf(stderr, "No prior tcp state file.\n");
+        return NULL;
+    }
+    
+    infile = fopen(conf->TCP_STATE_PATH, "r");
+    if (infile == NULL) {
+        fprintf(stderr, "Could not open existing tcp state file.\n");
+        return NULL;
+    }
+
+    pkt = malloc(sizeof(tcp_info));
+    read = fread(pkt, sizeof(tcp_info), 1, infile);
+    while (read != 0) {
+        // If the last packet had a another packet in the session,
+        // then point it to this one and vice versa. 
+        // Note: Don't forget the packets are in most recent first order.
+        if (has_prev == 1) {
+            prev->prev_pkt = pkt;
+            pkt->next_pkt = prev;
+        } else {
+            // The last packet was the last in a session. 
+            // Start a new session.
+            *sess = pkt; 
+            sess = &(pkt->next_sess);
+        }
+        has_prev = (pkt->prev_pkt == NULL);
+        pkt->prev_pkt = NULL;
+        
+        pkt->data = malloc(sizeof(u_char) * pkt->len);
+        read = fread(pkt->data, sizeof(u_char), pkt->len, infile);
+        if (read != pkt->len) {
+            // We are failing to free the memory of anything read in so far.
+            // It's probably not a big deal.
+            fprintf(stderr, "Tcp state file read error (data).\n");
+            return NULL;
+        }
+
+        prev = pkt;
+        pkt = malloc(sizeof(tcp_info));
+        read = fread(pkt, sizeof(tcp_info), 1, infile);
+    }
+
+    // Since the last read was of length zero, (all other cases return or 
+    // continue) go ahead and free our last allocated object.
+    free(pkt);
+
+    return first_sess;
 }
 
 void tcp_print(tcp_info * tcp) {
@@ -1007,7 +1122,7 @@ bpf_u_int32 parse_rr(bpf_u_int32 pos, bpf_u_int32 id_pos,
         rr->data = escape_data(packet, rr_start, header->len);
         buffer = malloc(sizeof(char) * (strlen(rr->data) + strlen(msg) + 1));
         sprintf(buffer, "%s%s", msg, rr->data);
-        dbg_free(rr->data);
+        free(rr->data);
         rr->data = buffer;
         return 0;
     }
@@ -1088,7 +1203,7 @@ bpf_u_int32 dns_parse(bpf_u_int32 pos, const struct pcap_pkthdr *header,
 
     SHOW_RAW(
         printf("dns\n");
-        print_packet(header, packet, pos, header->len, 2);
+        print_packet(header->len, packet, pos, header->len, 2);
     )
     VERBOSE(
         printf("DNS id:%d, qr:%d, AA:%d, TC:%d, rcode:%d\n", 
@@ -1272,7 +1387,9 @@ void handler(u_char * args, const struct pcap_pkthdr *header,
                 // Try a tcp_offset of 0, just in case.
                 tcp_offset = 0;
             } else { 
-                fprintf(stderr, "Could not find beginning of TCP stream.\n");
+                char * bad_data = escape_data(tcp->data, 0, tcp->len);
+                printf("Bad TCP stream: %s\n", bad_data);
+                free(bad_data);
             }
         }
 
@@ -1312,8 +1429,8 @@ void handler(u_char * args, const struct pcap_pkthdr *header,
 
         tmp = tcp;
         tcp = tcp->next_sess;
-        dbg_free(tmp->data);
-        dbg_free(tmp);
+        free(tmp->data);
+        free(tmp);
     }
     DBG(printf("Done with packet.\n");)
 }
