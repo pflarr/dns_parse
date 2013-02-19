@@ -761,7 +761,7 @@ tcp_info * tcp_assemble(tcp_info * base) {
         // we may still be able to pull out some DNS data if we're lucky.
         origin = base;
         curr_seq = base->sequence;
-        printf("This one.");
+        printf("This one.\n");
         tcp_print(origin);
     }
 
@@ -789,23 +789,28 @@ tcp_info * tcp_assemble(tcp_info * base) {
                 }
             }
         }
-        // If we didn't find a matching packet with data, you the least
+        // If we didn't find a matching packet with data, use the least
         // recent zero length packet. If that should be the origin, but 
         // isn't, adjust the origin packet.
         if (*curr == NULL && next_best != NULL) {
             if (*next_best != NULL) {
-                if (origin->sequence == (*next_best)->sequence) {
-                    origin = *next_best;
-                }
                 curr = next_best;
             }
+        }
+        
+        // Set the origin to this packet if they have the same sequence.
+        // Guarantees that the origin will be a packet removed from the
+        // packet list (and thus not thrown away later).
+        // This will only occur for the first sequence number.
+        if (*curr != NULL && (origin->sequence == (*curr)->sequence)) {
+            origin = *curr;
         }
  
         if (*curr != NULL) {
             DBG(printf("Current assembly packet: ");)
             DBG(tcp_print(*curr);)
             tcp_info * tmp;
-            DBG(print_packet((*curr)->len, (*curr)->data, 0, (*curr)->len, 8);)
+            //DBG(print_packet((*curr)->len, (*curr)->data, 0, (*curr)->len, 8);)
             // We found a match.
             // Save the data and it's length.
             data_chain[dc_i] = (*curr)->data;
@@ -827,6 +832,7 @@ tcp_info * tcp_assemble(tcp_info * base) {
             // Free that packet object as long as it isn't the origin.
             if (tmp != origin) {
                 // The data part will be freed separately in a bit.
+                DBG(printf("Freeing: %p\n", tmp);)
                 free(tmp);
             }
 
