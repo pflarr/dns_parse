@@ -38,9 +38,9 @@
 // Get the DNS tcp length prepended field.
 #define TCP_DNS_LEN(P,O) ((P[O]<<8) + P[O+1])
 // Compare two IPv6 addresses
-#define V6_CMP(A,B) ((A.u6_addr32[0] == B.u6_addr32[0]) && \\
-                     (A.u6_addr32[1] == B.u6_addr32[1]) && \\
-                     (A.u6_addr32[2] == B.u6_addr32[2]) && \\
+#define V6_CMP(A,B) ((A.u6_addr32[0] == B.u6_addr32[0]) && \
+                     (A.u6_addr32[1] == B.u6_addr32[1]) && \
+                     (A.u6_addr32[2] == B.u6_addr32[2]) && \
                      (A.u6_addr32[3] == B.u6_addr32[3]))
                      
 // We'll be passing the 'config' structure * through as the last 
@@ -57,6 +57,13 @@ typedef union {
     struct in_addr v4;
     struct in6_addr v6;
 } ip_shared;
+// Convert an ip_shared union into a str. Like NTOA, this uses a single
+// buffer, so freeing it need not be freed, but it can only be used once
+// per statement.
+char * IP_STR_BUFF[INET6_ADDRSTRLEN];
+#define IP_STR(ip, ver) inet_ntop(ver == 4 ? AF_INET : AF_INET6,\
+                                  ver == 4 ? ip.v4: ip.v6,\
+                                  IP_STR_BUFF, INET6_ADDRSTRLEN)
 
 typedef struct {
     u_char version;
@@ -68,6 +75,7 @@ typedef struct {
 
 typedef struct ip_fragment {
     bpf_u_int32 id;
+    u_char version;
     ip_shared srcip;
     ip_shared dstip;
     bpf_u_int32 start;
@@ -92,6 +100,7 @@ typedef struct {
 
 typedef struct tcp_info {
     struct timeval ts;
+    u_char ip_ver;
     ip_shared srcip;
     ip_shared dstip;
     u_short srcport;
@@ -436,19 +445,36 @@ bpf_u_int32 eth_parse(struct pcap_pkthdr *header, u_char *packet,
 // Parse MPLS. We don't care about the data in these headers, all we have
 // to do is continue parsing them until the 'bottom of stack' flag is set.
 bpf_u_int32 mpls_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
-                       u_char *packet) {
+                       u_char *packet, eth_info * eth) {
     // Bottom of stack flag.
     u_char bos;
     do {
         // Deal with truncated MPLS.
         if (header->len < (pos + 4)) {
-            printf("Tuncated Packet(mpls)\n");
+            printf("Truncated Packet(mpls)\n");
             return 0;
         }
         
         bos = packet[pos + 2] & 0x01;
         pos += 4;
     } while (bos == 0);
+
+    if (header->len < pos) {
+        printf("Truncated Packet(post mpls)\n");
+        return 0;
+    }
+
+    // 'Guess' the next protocol. This can result in false positives, but
+    // generally not.
+    u_char ip_ver = packet[pos] >> 4;
+    switch (ip_ver) {
+        case 0x04:
+            eth->ethtype = 0x0800; break;
+        case 0x06:
+            eth->ethtype = 0x86DD; break;
+        else:
+            eth->ethtype = 0;
+    }
 
     return pos;
 }
@@ -458,6 +484,9 @@ bpf_u_int32 ipv4_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
 
     bpf_u_int32 version, h_len;
     int i;
+    ip_fragment * frag = NULL;
+    u_char frag_mf;
+    u_short frag_offset;
 
     if (header-> len - pos < 20) {
         printf("Truncated Packet(ipv4)\n");
@@ -472,6 +501,9 @@ bpf_u_int32 ipv4_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
     ip->srcip.v4.s_addr = *(in_addr_t *)(packet + pos + 12);
     ip->dstip.v4.s_addr = *(in_addr_t *)(packet + pos + 16);
 
+    frag_mf = (packet[pos+6] & 0x80) >> 7;
+    frag_offset = (((packet[pos+6] << 8) & 0x1f) + packet[pos+7]) << 3;
+    
     SHOW_RAW(
         printf("\nipv4\n");
         print_packet(header->len, packet, pos, pos + 4*h_len, 4);
@@ -479,20 +511,50 @@ bpf_u_int32 ipv4_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
     VERBOSE(
         printf("version: %d, length: %d, proto: %d\n", 
                 ip->version, ip->length, ip->proto);
-        printf("srcip: %s, ", inet_ntoa(ip->srcip.v4));
-        printf("dstip: %s\n", inet_ntoa(ip->dstip.v4));
+        printf("srcip: %s, ", IP_STR(ip->srcip, ip->version));
+        printf("dstip: %s\n", IP_STR(ip->dstip, ip->version));
     )
 
+    if (frag_mf == 1 || frag_offset != 0) {
+        frag = malloc(sizeof(ip_fragment));
+        frag->start = frag_offset;
+        // We don't try to deal with endianness here, since it 
+        // won't matter as long as we're consistent.
+        frag->islast = frag_mf;
+        frag->id = *((u_short *) packet[pos+4]);
+        frag->srcip = ip->srcip;
+        frag->dstip = ip->dstip;
+        frag->end = frag->start + ip->length;
+        frag->data = malloc(sizeof(u_char) * ip->length);
+        memcpy(frag->data, packet[pos + 4*h_len], ip->length);
+        // Add the fragment to the list.
+        // If this completed the packet, it is returned.
+        frag = ip_frag_add(conf, frag); 
+        if (frag != NULL) {
+            // Update the IP info on the reassembled data.
+            ip->length = frag->length;
+            p_packet = frag->data;
+            return 0;
+        }
+        // Signals that there is no more work to do on this packet.
+        p_packet = NULL;
+        return 0;
+    } 
+
     // move the position up past the options section.
-    pos = pos + 4*h_len;
-    return pos;
+    return pos + 4*h_len;
+
 }
 
 bpf_u_int32 ipv6_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
-                       u_char * packet, ip_info * ip) {
+                       u_char ** p_packet, ip_info * ip) {
+
+    // For convenience and code consistency, dereference the packet **.
+    u_char * packet = *p_packet;
 
     // In case the IP packet is a fragment.
     ip_fragment * frag = NULL;
+    bpf_u_int32 header_len = 40;
 
     if (header->len < (pos + 40)) {
         printf("Truncated Packet(ipv6)\n");
@@ -531,6 +593,8 @@ bpf_u_int32 ipv6_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
                     return 0;
                 }
                 next_hdr = packet[pos];
+                // The headers are 16 bytes longer.
+                header_len += 16;
                 pos += packet[pos+1] + 1;
                 break;
             case 0x44:
@@ -542,20 +606,35 @@ bpf_u_int32 ipv6_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
                 // We don't try to deal with endianness here, since it 
                 // won't matter as long as we're consistent.
                 frag->id = *((bpf_u_int32 *) packet[pos+4]);
+                // The headers are 8 bytes longer.
+                header_len += 8;
                 pos += 8;
                 break;
         }
     }
+
+    ip->length = ip->length - header_len;
     
     // Handle fragments.
     if (frag != NULL) {
+        frag->srcip = ip->srcip;
+        frag->dstip = ip->dstip;
+        frag->end = frag->start + ip->length;
+        frag->data = malloc(sizeof(u_char) * ip->length);
+        memcpy(frag->data, packet[pos], ip->length);
         // Add the fragment to the list.
         // If this completed the packet, it is returned.
         frag = ip_frag_add(conf, frag); 
         if (frag != NULL) {
-            // Time to fake the rest of the packet, too bad we're not equipped
-            // for it.
+            ip->length = frag->length;
+            p_packet = frag->data;
+            return 0;
         }
+        // Signals that there is no more work to do on this packet.
+        p_packet = NULL;
+        return 0;
+    } else {
+        return pos;
     }
 
 }
@@ -747,6 +826,7 @@ void tcp_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
     tcp->next_pkt = NULL;
     tcp->prev_pkt = NULL;
     tcp->ts = header->ts;
+    tcp->ip_ver = ip->version;
     tcp->srcip = ip->srcip;
     tcp->dstip = ip->dstip;
     tcp->srcport = LE_U_SHORT(packet, pos);
@@ -908,7 +988,6 @@ void tcp_expire(config * conf, const struct timeval * now ) {
     // With TCP DNS, the DNS data is prepended with a two byte length,
     // so we at least know how long it is. 
     while (head != NULL) {
-        tcp_info * tmp;
         bpf_u_int32 size = (head->data[0] << 8) + head->data[1];
         
         // There is a possiblity that this session won't start at the
@@ -929,7 +1008,7 @@ void tcp_expire(config * conf, const struct timeval * now ) {
                 pos += 2 + dns_len;
             }
             // We've found the right offset (probably 0).
-            if (pos == tcp->len) {
+            if (pos == head->len) {
                 offset_found = 1;
                 break;
             }
@@ -938,11 +1017,11 @@ void tcp_expire(config * conf, const struct timeval * now ) {
         // If we couldn't find the right offset, just try an offset of 
         // zero as long as that offset isn't longer than all of our data.
         if (offset_found == 0) {
-            if (TCP_DNS_LEN(tcp->data, 0) < tcp->len &&
-                TCP_DNS_LEN(tcp->data, 0) > 12 ) {
+            if (TCP_DNS_LEN(head->data, 0) < head->len &&
+                TCP_DNS_LEN(head->data, 0) > 12 ) {
                 offset = 0;
             } else { 
-                char * bad_data = escape_data(tcp->data, 0, tcp->len);
+                char * bad_data = escape_data(head->data, 0, head->len);
                 printf("Bad TCP stream: %s\n", bad_data);
                 free(bad_data);
             }
@@ -951,24 +1030,23 @@ void tcp_expire(config * conf, const struct timeval * now ) {
         // Go through the stream offset by offset, create a fake packet
         // header (and packet data), and hand both off to the DNS parser.
         // The results are output.
-        dns_len = TCP_DNS_LEN(tcp->data, offset);
-        while (offset + dns_len < tcp->len) {
+        dns_len = TCP_DNS_LEN(head->data, offset);
+        while (offset + dns_len < head->len) {
             dns_info dns;
             transport_info trns;
-            info * tmp;
             struct pcap_pkthdr header;
 
-            header.ts = tcp->ts;
-            header.caplen = tcp->len;
-            header.len = tcp->len;
-            trns.srcport = tcp->srcport;
-            trns.dstport = tcp->dstport;
-            trns.length = tcp->len;
+            header.ts = head->ts;
+            header.caplen = head->len;
+            header.len = head->len;
+            trns.srcport = head->srcport;
+            trns.dstport = head->dstport;
+            trns.length = head->len;
             trns.transport = TCP;
-            ip.srcip.v4.s_addr = tcp->srcip.v4.s_addr;
-            ip.dstip.v4.s_addr = tcp->dstip.v4.s_addr;
+            ip.srcip.v4.s_addr = head->srcip.v4.s_addr;
+            ip.dstip.v4.s_addr = head->dstip.v4.s_addr;
             DBG(printf("Parsing DNS (TCP).\n");)
-            pos = dns_parse(offset + 2, &header, tcp->data, &dns, conf);
+            pos = dns_parse(offset + 2, &header, head->data, &dns, conf);
             if (pos != 0) {
                 print_summary(&ip, &trns, &dns, &header, conf);
             }
@@ -980,15 +1058,16 @@ void tcp_expire(config * conf, const struct timeval * now ) {
                 break;
             }
             offset += 2 + dns_len;
-            if (offset < tcp->len) {
+            if (offset < head->len) {
                 // We don't want to try to parse the length if we're past
                 // the end of the packet.
-                dns_len = TCP_DNS_LEN(tcp->data, offset);
+                dns_len = TCP_DNS_LEN(head->data, offset);
             }
         }
 
+        tcp_info * tmp;
         tmp = tcp;
-        tcp = tcp->next_sess;
+        tcp = head->next_sess;
         free(tmp->data);
         free(tmp);
     }
@@ -1310,9 +1389,10 @@ void tcp_print(tcp_info * tcp) {
     if (tcp == NULL) {
         printf("NULL tcp object\n");
     } else {
-        printf("%p %s:%d ", tcp, inet_ntoa(tcp->srcip.v4), tcp->srcport);
+        printf("%p %s:%d ", tcp, IP_STR(tcp->srcip, tcp->ip_ver), 
+                                 tcp->srcport);
         printf("-> %s:%d, seq: %x, safr: %d%d%d%d, len: %u\n", 
-               inet_ntoa(tcp->dstip.v4), tcp->dstport,
+               IP_STR(tcp->dstip, tcp->ip_ver), tcp->dstport,
                tcp->sequence, tcp->syn, tcp->ack,
                tcp->fin, tcp->rst, tcp->len);
     }
@@ -1593,8 +1673,8 @@ void print_summary(ip_info * ip, transport_info * trns, dns_info * dns,
     }
     
     fflush(stdout);
-    printf("%s,%s,", date, inet_ntoa(ip->srcip.v4));
-    printf("%s,%d,%c,%c,%s", inet_ntoa(ip->dstip.v4),
+    printf("%s,%s,", date, IP_STR(ip->srcip, ip->version));
+    printf("%s,%d,%c,%c,%s", IP_STR(ip->dstip, ip->version),
            dnslength, proto, dns->qr ? 'r':'q', dns->AA?"AA":"NA");
     qnext = dns->queries;
     while (qnext != NULL) {
@@ -1688,5 +1768,4 @@ void handler(u_char * args, const struct pcap_pkthdr *orig_header,
     // Get any complete or expired TCP sessions.
     DBG(printf("Expiring TCP.\n");)
     tcp_info * tcp = tcp_expire(conf, &header->ts);
-       DBG(printf("Done with packet.\n");)
 }
