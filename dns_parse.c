@@ -17,10 +17,10 @@
 // Verbosity flags. Switch which function is defined to add or remove
 // various output printfs from the source. These are all for debugging
 // purposes.
-//#define VERBOSE(A) A
-#define VERBOSE(A)
-//#define DBG(A) A fflush(stdout);
-#define DBG(A)
+#define VERBOSE(A) A
+//#define VERBOSE(A)
+#define DBG(A) A fflush(stdout);
+//#define DBG(A)
 //#define SHOW_RAW(A) A
 #define SHOW_RAW(A) 
 // There are a lot of DBG statements in the tcp and ip_fragment sections.
@@ -89,7 +89,7 @@ inline char * iptostr(ip_addr * ip) {
 typedef struct {
     ip_addr src;
     ip_addr dst;
-    u_short length;
+    bpf_u_int32 length;
     u_char proto;
 } ip_info;
 
@@ -105,16 +105,14 @@ typedef struct ip_fragment {
     struct ip_fragment * child; 
 } ip_fragment;
 
-enum transport_type {
-    UDP,
-    TCP
-};
+#define UDP 0x11
+#define TCP 0x06
 
 typedef struct {
     u_short srcport;
     u_short dstport;
     u_short length;
-    enum transport_type transport; 
+    u_char transport; 
 } transport_info;
 
 typedef struct tcp_info {
@@ -229,6 +227,7 @@ bpf_u_int32 parse_rr(bpf_u_int32, bpf_u_int32, struct pcap_pkthdr *,
 void print_summary(ip_info *, transport_info *, dns_info *,
                    struct pcap_pkthdr *, config *);
 void print_rr_section(dns_rr *, char *, config *);
+void print_packet(bpf_u_int32, u_char *, bpf_u_int32, bpf_u_int32, u_int);
 
 int main(int argc, char **argv) {
     pcap_t * pcap_file;
@@ -409,12 +408,15 @@ int main(int argc, char **argv) {
 
     // Load and prior TCP session info
     conf.tcp_sessions_head = NULL; 
-    tcp_load_state(&conf);
+    //tcp_load_state(&conf);
  
     // need to check this for overflow.
     read = pcap_dispatch(pcap_file, -1, (pcap_handler)handler, 
                          (u_char *) &conf);
-    tcp_save_state(&conf);
+
+    
+    tcp_expire(&conf, NULL);
+    // XXX tcp_save_state(&conf);
 
     return 0;
 }
@@ -460,7 +462,7 @@ void handler(u_char * args, const struct pcap_pkthdr *orig_header,
         printf("Unsupported EtherType: %04x\n", eth.ethtype);
         return;
     }
-    if (packet = NULL) return;
+    if (packet == NULL) return;
 
     // Transport layer parsing. 
     if (ip.proto == 17) {
@@ -530,6 +532,7 @@ bpf_u_int32 mpls_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
     // Bottom of stack flag.
     u_char bos;
     do {
+        VERBOSE(printf("MPLS Layer.\n");)
         // Deal with truncated MPLS.
         if (header->len < (pos + 4)) {
             printf("Truncated Packet(mpls)\n");
@@ -544,6 +547,7 @@ bpf_u_int32 mpls_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
         printf("Truncated Packet(post mpls)\n");
         return 0;
     }
+
 
     // 'Guess' the next protocol. This can result in false positives, but
     // generally not.
@@ -641,7 +645,7 @@ bpf_u_int32 ipv6_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
 
     // In case the IP packet is a fragment.
     ip_fragment * frag = NULL;
-    bpf_u_int32 header_len = 40;
+    bpf_u_int32 header_len = 0;
 
     if (header->len < (pos + 40)) {
         printf("Truncated Packet(ipv6)\n");
@@ -649,7 +653,7 @@ bpf_u_int32 ipv6_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
     }
     ip->length = (packet[pos+4] << 8) + packet[pos+5];
     IPv6_MOVE(ip->src, packet + pos + 8);
-    IPv6_MOVE(ip->dst, packet + pos + 8);
+    IPv6_MOVE(ip->dst, packet + pos + 24);
 
     // Jumbo grams will have a length of zero. We'll choose to ignore those,
     // and any other zero length packets.
@@ -659,16 +663,17 @@ bpf_u_int32 ipv6_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
     }
 
     u_char next_hdr = packet[pos+6];
+    VERBOSE(print_packet(header->len, packet, pos, pos+40, 4);)
+    VERBOSE(printf("IPv6 src: %s, ", iptostr(&ip->src));)
+    VERBOSE(printf("IPv6 dst: %s\n", iptostr(&ip->dst));)
     pos += 40;
+   
     // We pretty much have no choice but to parse all extended sections,
     // since there is nothing to tell where the actual data is.
-    while (next_hdr != 0x11 && next_hdr != 0x06) {
+    u_char done = 0;
+    while (done == 0) {
+        VERBOSE(printf("IPv6, next header: %u\n", next_hdr);)
         switch (next_hdr) {
-            // TCP or UDP. These are always last.
-            case 0x11:
-            case 0x06:
-                ip->proto = next_hdr;
-                break;
             // Handle hop-by-hop, dest, and routing options.
             // Yay for consistent layouts.
             case IPPROTO_HOPOPTS:
@@ -696,9 +701,14 @@ bpf_u_int32 ipv6_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
                 header_len += 8;
                 pos += 8;
                 break;
+            default:
+                // All non ipv6 extension protocols
+                ip->proto = next_hdr;
+                done = 1;
         }
     }
 
+    //XXX Need to do ipsec extension headers.
     ip->length = ip->length - header_len;
     
     // Handle fragments.
@@ -707,6 +717,8 @@ bpf_u_int32 ipv6_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
         frag->dst = ip->dst;
         frag->end = frag->start + ip->length;
         frag->data = malloc(sizeof(u_char) * ip->length);
+        VERBOSE(printf("IPv6 fragment. offset: %d, m:%u\n", frag->start,
+                                                            frag->islast);)
         memcpy(frag->data, packet+pos, ip->length);
         // Add the fragment to the list.
         // If this completed the packet, it is returned.
@@ -735,6 +747,8 @@ bpf_u_int32 udp_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
         printf("Truncated Packet(udp)\n");
         return 0;
     }
+
+    printf("hello world: %p\n", packet);
 
     udp->srcport = (packet[pos] << 8) + packet[pos+1];
     udp->dstport = (packet[pos+2] << 8) + packet[pos+3];
@@ -931,20 +945,32 @@ u_short tcp_checksum(ip_info *ip, u_char *packet,
                      bpf_u_int32 pos, struct pcap_pkthdr *header) {
     unsigned int sum = 0;
     unsigned int i;
-    bpf_u_int32 srcip = ip->src.addr.v4.s_addr; 
-    bpf_u_int32 dstip = ip->dst.addr.v4.s_addr; 
-  
-    // Put together the psuedo-header preamble for the checksum calculation.
-    // I handle the IP's in a rather odd manner and save a few cycles.
-    // Instead of arranging things such that for ip d.c.b.a -> cd + ab
-    //   I do cb + ad, which is equivalent. 
-    sum += (srcip >> 24) + ((srcip & 0xff) << 8);
-    sum += (srcip >> 8) & 0xffff;
-    sum += (dstip >> 24) + ((dstip & 0xff) << 8);
-    sum += (dstip >> 8) & 0xffff;
-    sum += ip->proto;
-    sum += ip->length;
-  
+
+    if (ip->src.vers == IPv4) {
+        bpf_u_int32 srcip = ip->src.addr.v4.s_addr; 
+        bpf_u_int32 dstip = ip->dst.addr.v4.s_addr; 
+      
+        // Put together the psuedo-header preamble for the checksum calculation.
+        // I handle the IP's in a rather odd manner and save a few cycles.
+        // Instead of arranging things such that for ip d.c.b.a -> cd + ab
+        //   I do cb + ad, which is equivalent. 
+        sum += (srcip >> 24) + ((srcip & 0xff) << 8);
+        sum += (srcip >> 8) & 0xffff;
+        sum += (dstip >> 24) + ((dstip & 0xff) << 8);
+        sum += (dstip >> 8) & 0xffff;
+        sum += ip->proto;
+        sum += ip->length;
+    } else {
+        u_short * src_v6 = ip->src.addr.v6.s6_addr16;
+        u_short * dst_v6 = ip->dst.addr.v6.s6_addr16;
+        for (i=0; i<8; i++) {
+            sum += (src_v6[i] >> 8) + ((src_v6[i] & 0xff) << 8);
+            sum += (dst_v6[i] >> 8) + ((dst_v6[i] & 0xff) << 8);
+        }
+        sum += ip->length;
+        sum += TCP;
+    }
+      
     // Add the TCP Header up to the checksum, which we'll skip.
     for (i=0; i < 16; i += 2) {
         sum += LE_U_SHORT(packet, pos + i);
@@ -1014,7 +1040,6 @@ void tcp_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
     tcp->fin = GET_BIT(packet, pos + 13, 0);
     tcp->rst = GET_BIT(packet, pos + 13, 2);
     offset = packet[pos + 12] >> 4;
-    DBG(printf("Done some.\n");)
 
     if ((pos + offset*4) > header->len) {
         fprintf(stderr, "Truncated TCP packet: %d, %d\n", offset, header->len);
@@ -1026,7 +1051,6 @@ void tcp_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
     // Ignore packets with a bad checksum
     checksum = LE_U_SHORT(packet, pos + 16);
 
-    // XXX I still need to add IPv6 support here.
     actual_checksum = tcp_checksum(ip, packet, pos, header);
     if (checksum != actual_checksum || 
         // 0xffff and 0x0000 are both equal to zero in one's compliment,
@@ -1041,8 +1065,6 @@ void tcp_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
         // Ignore, since it's a reset packet.
     }
     
-    DBG(printf("Checksummed.\n");)
-
     if (tcp->len > 0) {
         tcp->data = malloc(sizeof(char) * (tcp->len));
         memcpy(tcp->data, packet + pos + (offset*4), tcp->len);
@@ -1120,6 +1142,8 @@ void tcp_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
 // The expired sessions are reassembled (or at least an attempt is made).
 // The reassembled data is handed of the the dns parser, and we
 // output the results.
+// Now should be the timeval that came with the most recent packet.
+// Now can also be NULL, which will expire everything.
 void tcp_expire(config * conf, const struct timeval * now ) {
     tcp_info * head = NULL;
     tcp_info ** ptr = &head;
@@ -1127,7 +1151,7 @@ void tcp_expire(config * conf, const struct timeval * now ) {
 
     while (*next != NULL) {
         // Check to see if this session is expired based on the time given.
-        if (is_expired(*now, (*next)->ts)) {
+        if (now == NULL || is_expired(*now, (*next)->ts)) {
             // We need this because we'll probably end up free the 
             // first packet of the session.
             tcp_info * next_sess = (*next)->next_sess;
@@ -1200,6 +1224,9 @@ void tcp_expire(config * conf, const struct timeval * now ) {
                 offset = 0;
             } else { 
                 char * bad_data = escape_data(head->data, 0, head->len);
+                FILE * dout = fopen("/tmp/bad","w");
+                fwrite(head->data, sizeof(u_char), head->len, dout);
+                fclose(dout);
                 printf("Bad TCP stream: %s\n", bad_data);
                 free(bad_data);
             }
