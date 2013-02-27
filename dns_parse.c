@@ -17,10 +17,10 @@
 // Verbosity flags. Switch which function is defined to add or remove
 // various output printfs from the source. These are all for debugging
 // purposes.
-#define VERBOSE(A) A
-//#define VERBOSE(A)
-#define DBG(A) A fflush(stdout);
-//#define DBG(A)
+//#define VERBOSE(A) A
+#define VERBOSE(A)
+//#define DBG(A) A fflush(stdout);
+#define DBG(A)
 //#define SHOW_RAW(A) A
 #define SHOW_RAW(A) 
 // There are a lot of DBG statements in the tcp and ip_fragment sections.
