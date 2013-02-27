@@ -160,8 +160,12 @@ typedef struct {
     int PRINT_RR_NAME;
     int MISSING_TYPE_WARNINGS;
     char * TCP_STATE_PATH;
+    bpf_u_int32 DEDUPS;
     tcp_info * tcp_sessions_head;
     ip_fragment * ip_fragment_head;
+    bpf_u_int32 * dedup_hashes;
+    bpf_u_int32 dedup_pos;
+    
 } config;
 
 typedef struct dns_question {
@@ -228,6 +232,8 @@ void print_summary(ip_info *, transport_info *, dns_info *,
                    struct pcap_pkthdr *, config *);
 void print_rr_section(dns_rr *, char *, config *);
 void print_packet(bpf_u_int32, u_char *, bpf_u_int32, bpf_u_int32, u_int);
+int dedup(bpf_u_int32, struct pcap_pkthdr *, u_char *,
+          ip_info *, transport_info *, config *);
 
 int main(int argc, char **argv) {
     pcap_t * pcap_file;
@@ -409,14 +415,19 @@ int main(int argc, char **argv) {
     // Load and prior TCP session info
     conf.tcp_sessions_head = NULL; 
     //tcp_load_state(&conf);
+
+    conf.DEDUPS = 100;
+    conf.dedup_pos = 0;
+    conf.dedup_hashes = calloc(conf.DEDUPS, sizeof(bpf_u_int32));
  
     // need to check this for overflow.
     read = pcap_dispatch(pcap_file, -1, (pcap_handler)handler, 
                          (u_char *) &conf);
-
     
     tcp_expire(&conf, NULL);
     // XXX tcp_save_state(&conf);
+
+    free(conf.dedup_hashes);
 
     return 0;
 }
@@ -471,6 +482,10 @@ void handler(u_char * args, const struct pcap_pkthdr *orig_header,
         transport_info udp;
         pos = udp_parse(pos, &header, packet, &udp, conf);
         if ( pos == 0 ) return;
+        if (dedup(pos, &header, packet, &ip, &udp, conf) == 1) {
+            // A duplicate packet.
+            return;
+        }
         pos = dns_parse(pos, &header, packet, &dns, conf);
         print_summary(&ip, &udp, &dns, &header, conf);
     } else if (ip.proto == 6) {
@@ -1816,6 +1831,56 @@ bpf_u_int32 parse_rr_set(bpf_u_int32 pos, bpf_u_int32 id_pos,
         last = current;
     }
     return pos;
+}
+
+int dedup(bpf_u_int32 pos, struct pcap_pkthdr *header, u_char * packet,
+          ip_info * ip, transport_info * trns, config * conf) {
+    
+    bpf_u_int32 hash = 0;
+    bpf_u_int32 i;
+
+    if (ip->src.vers == IPv4) {
+        hash += ip->src.addr.v4.s_addr;
+        hash += ip->dst.addr.v4.s_addr;
+    } else {
+        for (i=0; i<4; i++) {
+            hash += ip->src.addr.v6.s6_addr32[i];
+            hash += ip->dst.addr.v6.s6_addr32[i];
+        }
+    }
+
+    hash += trns->srcport;
+    hash += trns->dstport;
+    
+    // Add in the payload.
+    for (; pos + 4 < header->len; pos+=4) {
+        hash += *(bpf_u_int32 *)(packet + pos);
+    }   
+    // Add in those last bytes, if any.
+    hash += (*(bpf_u_int32 *)(packet + pos)) & 
+                    !(0xffffffff >> (8*(header->len - pos)));
+    // Without this, all strings of nulls are equivalent.
+    hash += header->len;
+    // The hash is now done.
+
+    if (hash == 0) {
+        // Print the packet anyway. 
+        // Since we initialize the dedup list to zero's, it's likely that
+        // this will produce a false positive.
+        return 0;
+    }
+
+    for (i=0; i < conf->DEDUPS; i++) {
+        if (hash == conf->dedup_hashes[i]) {
+            // Found a match, return the fact.
+            return 1;
+        }
+    }
+    
+    // There was no match. Replace the oldest dedup.
+    conf->dedup_hashes[conf->dedup_pos] = hash;
+    conf->dedup_pos = (conf->dedup_pos + 1) % conf->DEDUPS;
+    return 0;
 }
 
 // Parse the dns protocol in 'packet' starting at 'pos'. 
