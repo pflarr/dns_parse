@@ -541,6 +541,7 @@ bpf_u_int32 mpls_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
         
         bos = packet[pos + 2] & 0x01;
         pos += 4;
+        DBG(printf("MPLS layer. \n");)
     } while (bos == 0);
 
     if (header->len < pos) {
@@ -590,9 +591,9 @@ bpf_u_int32 ipv4_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
     IPv4_MOVE(ip->dst, packet + pos + 16);
 
     // Set if NOT the last fragment.
-    frag_mf = (packet[pos+6] & 0x80) >> 7;
+    frag_mf = (packet[pos+6] & 0x20) >> 5;
     // Offset for this data in the fragment.
-    frag_offset = (((packet[pos+6] << 8) & 0x1f) + packet[pos+7]) << 3;
+    frag_offset = ((packet[pos+6] & 0x1f) << 11) + (packet[pos+7] << 3);
     
     SHOW_RAW(
         printf("\nipv4\n");
@@ -606,6 +607,8 @@ bpf_u_int32 ipv4_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
     )
 
     if (frag_mf == 1 || frag_offset != 0) {
+        VERBOSE(printf("Fragmented IPv4, offset: %u, mf:%u\n", frag_offset,
+                                                               frag_mf);)
         frag = malloc(sizeof(ip_fragment));
         frag->start = frag_offset;
         // We don't try to deal with endianness here, since it 
@@ -616,6 +619,7 @@ bpf_u_int32 ipv4_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
         frag->dst = ip->dst;
         frag->end = frag->start + ip->length;
         frag->data = malloc(sizeof(u_char) * ip->length);
+        frag->next = frag->child = NULL;
         memcpy(frag->data, packet + pos + 4*h_len, ip->length);
         // Add the fragment to the list.
         // If this completed the packet, it is returned.
@@ -649,7 +653,7 @@ bpf_u_int32 ipv6_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
 
     if (header->len < (pos + 40)) {
         printf("Truncated Packet(ipv6)\n");
-        return 0;
+        p_packet=NULL; return 0;
     }
     ip->length = (packet[pos+4] << 8) + packet[pos+5];
     IPv6_MOVE(ip->src, packet + pos + 8);
@@ -659,7 +663,7 @@ bpf_u_int32 ipv6_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
     // and any other zero length packets.
     if (ip->length == 0) {
         fprintf(stderr, "Zero Length IP packet, possible Jumbo Payload.\n");
-        return 0;
+        p_packet=NULL; return 0;
     }
 
     u_char next_hdr = packet[pos+6];
@@ -681,13 +685,43 @@ bpf_u_int32 ipv6_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
             case IPPROTO_ROUTING:
                 if (header->len < (pos + 40)) {
                     printf("Truncated Packet(ipv6)\n");
-                    return 0;
+                    p_packet = NULL; return 0;
                 }
                 next_hdr = packet[pos];
                 // The headers are 16 bytes longer.
                 header_len += 16;
                 pos += packet[pos+1] + 1;
                 break;
+            case 51: // Authentication Header. See RFC4302
+                if (header->len < (pos + 2)) {
+                    printf("Truncated Packet(ipv6)\n");
+                    p_packet = NULL; return 0;
+                } 
+                next_hdr = packet[pos];
+                header_len += (packet[pos+1] + 2) * 4;
+                pos += (packet[pos+1] + 2) * 4;
+                if (header->len < pos) {
+                    printf("Truncated Packet(ipv6)\n");
+                    p_packet = NULL; return 0;
+                } 
+            case 50: // ESP Protocol. See RFC4303.
+                // We don't support ESP.
+                printf("Unsupported protocol: IPv6 ESP.\n");
+                if (frag != NULL) free(frag);
+                p_packet = NULL;
+                return 0;
+            case 135: // IPv6 Mobility See RFC 6275
+                if (header->len < (pos + 2)) {
+                    printf("Truncated Packet(ipv6)\n");
+                    p_packet = NULL; return 0;
+                }  
+                next_hdr = packet[pos];
+                header_len += packet[pos+1] * 8;
+                pos += packet[pos+1] * 8;
+                if (header->len < pos) {
+                    printf("Truncated Packet(ipv6)\n");
+                    p_packet = NULL; return 0;
+                } 
             case IPPROTO_FRAGMENT:
                 // IP fragment.
                 next_hdr = packet[pos];
@@ -708,7 +742,6 @@ bpf_u_int32 ipv6_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
         }
     }
 
-    //XXX Need to do ipsec extension headers.
     ip->length = ip->length - header_len;
     
     // Handle fragments.
@@ -716,6 +749,7 @@ bpf_u_int32 ipv6_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
         frag->src = ip->src;
         frag->dst = ip->dst;
         frag->end = frag->start + ip->length;
+        frag->next = frag->child = NULL;
         frag->data = malloc(sizeof(u_char) * ip->length);
         VERBOSE(printf("IPv6 fragment. offset: %d, m:%u\n", frag->start,
                                                             frag->islast);)
@@ -747,8 +781,6 @@ bpf_u_int32 udp_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
         printf("Truncated Packet(udp)\n");
         return 0;
     }
-
-    printf("hello world: %p\n", packet);
 
     udp->srcport = (packet[pos] << 8) + packet[pos+1];
     udp->dstport = (packet[pos+2] << 8) + packet[pos+3];
@@ -864,6 +896,8 @@ void dns_question_free(dns_question * question) {
 ip_fragment * ip_frag_add(ip_fragment * this, config * conf) {
     ip_fragment ** curr = &(conf->ip_fragment_head);
     ip_fragment ** found = NULL;
+ 
+    DBG(printf("Adding fragment at %p\n", this);)
 
     // Find the matching fragment list.
     while (*curr != NULL) {
@@ -871,24 +905,33 @@ ip_fragment * ip_frag_add(ip_fragment * this, config * conf) {
             IP_CMP((*curr)->src, this->src) &&
             IP_CMP((*curr)->dst, this->dst)) {
             found = curr;
+            DBG(printf("Match found. %p\n", *found);)
             break;
         }
         curr = &(*curr)->next;
     }
-
+    
     // At this point curr will be the head of our matched chain of fragments, 
     // and found will be the same. We'll use found as our pointer into this
     // chain, and curr to remember where it starts.
+    if (found == NULL) {
+        found = curr;
+    }
 
     // If there wasn't a matching list, then we're done.
     if (*found == NULL) {
+        DBG(printf("No matching fragments.\n");)
         this->next = conf->ip_fragment_head;
         conf->ip_fragment_head = this;
         return NULL;
     }
 
     while (*found != NULL) {
+        DBG(printf("*found: %u-%u, this: %u-%u\n",
+                   (*found)->start, (*found)->end,
+                   this->start, this->end);)
         if ((*found)->start >= this->end) {
+            DBG(printf("It goes in front of %p\n", *found);)
             // It goes before, so put it there.
             this->child = *found;
             this->next = (*found)->next;
@@ -896,45 +939,56 @@ ip_fragment * ip_frag_add(ip_fragment * this, config * conf) {
             break;
         } else if ((*found)->child == NULL && 
                     (*found)->end <= this->start) {
+            DBG(printf("It goes at the end. %p\n", *found);)
            // We've reached the end of the line, and that's where it
             // goes, so put it there.
             (*found)->child = this;
             break;
         }
+        DBG(printf("What: %p\n", *found);)
         found = &((*found)->next);
     }
+    DBG(printf("What: %p\n", *found);)
 
     // We found no place for the fragment, which means it's a duplicate
     // (or the chain is screwed up...)
     if (*found == NULL) {
+        DBG(printf("No place for fragment: %p\n", *found);)
         free(this);
         return NULL;
     }
 
     // Now we try to collapse the list.
     found = curr;
-    while ((*found)->child != NULL) {
+    while ((*found != NULL) && (*found)->child != NULL) {
         ip_fragment * child = (*found)->child;
         if ((*found)->end == child->start) {
+            DBG(printf("Merging frag at offset %u-%u with %u-%u\n", 
+                        (*found)->start, (*found)->end,
+                        child->start, child->end);)
             bpf_u_int32 child_len = child->end - child->start;
             bpf_u_int32 fnd_len = (*found)->end - (*found)->start;
             u_char * buff = malloc(sizeof(u_char) * (fnd_len + child_len));
             memcpy(buff, (*found)->data, fnd_len);
             memcpy(buff + fnd_len, child->data, child_len);
-            (*found)->child = child->child;
+            (*found)->end = (*found)->end + child_len;
             (*found)->islast = child->islast;
+            (*found)->child = child->child;
             free(child);
         } else {
-            found = &(child->child);
+            found = &(*found)->child;
         }
     }
 
+    DBG(printf("*curr, start: %u, end: %u, islast: %u\n", 
+                (*curr)->start, (*curr)->end, (*curr)->islast);)
     // Check to see if we completely collapsed it.
     // *curr is the pointer to the first fragment.
-    if ((*curr)->islast == 1) {
+    if ((*curr)->islast != 0) {
         ip_fragment * ret = *curr;
         // Remove this from the fragment list.
         *curr = (*curr)->next;
+        DBG(printf("Returning reassembled fragments.\n");)
         return ret;
     }
     // This is what happens when we don't complete a packet.
@@ -1224,9 +1278,6 @@ void tcp_expire(config * conf, const struct timeval * now ) {
                 offset = 0;
             } else { 
                 char * bad_data = escape_data(head->data, 0, head->len);
-                FILE * dout = fopen("/tmp/bad","w");
-                fwrite(head->data, sizeof(u_char), head->len, dout);
-                fclose(dout);
                 printf("Bad TCP stream: %s\n", bad_data);
                 free(bad_data);
             }
