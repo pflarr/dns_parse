@@ -492,7 +492,7 @@ void handler(u_char * args, const struct pcap_pkthdr *orig_header,
         // Hand the tcp packet over for later reconstruction.
         tcp_parse(pos, &header, packet, &ip, conf); 
     } else {
-        fprintf(stderr, "Unsupported Protocol(%d)\n", ip.proto);
+        fprintf(stderr, "Unsupported Transport Protocol(%d)\n", ip.proto);
         return;
     }
    
@@ -1327,7 +1327,7 @@ void tcp_expire(config * conf, const struct timeval * now ) {
             if (pos != offset + 2 + dns_len) {
                 // If these don't match up, then there is no point in
                 // continuing for this session.
-                printf("Mismatched TCP lengths.\n");
+                fprintf(stderr, "Mismatched TCP lengths.\n");
                 break;
             }
             offset += 2 + dns_len;
@@ -1411,8 +1411,6 @@ tcp_info * tcp_assemble(tcp_info * base) {
         // we may still be able to pull out some DNS data if we're lucky.
         origin = base;
         curr_seq = base->sequence;
-        printf("This one.\n");
-        tcp_print(origin);
     }
 
     // Gather all the bits of data, in order. 
@@ -1576,14 +1574,12 @@ void tcp_save_state(config * conf) {
             curr_pkt->data = NULL;
             written = fwrite(curr_pkt, sizeof(tcp_info), 1, outfile);
             if (written != 1) {
-                printf("writtin, size: %lu, %lu\n", written, sizeof(tcp_info));
                 fprintf(stderr, "Could not write to tcp state file.\n");
                 fclose(outfile);
                 return;
             }
             written = fwrite(data, sizeof(u_char), curr_pkt->len, outfile);
             if (written != curr_pkt->len) {
-                printf("writtin, size: %lu, %lu\n", written, sizeof(u_char)*curr_pkt->len);
                 fprintf(stderr, "Could not write to tcp state file(data).\n");
                 fclose(outfile);
                 return;
@@ -1833,6 +1829,7 @@ bpf_u_int32 parse_rr_set(bpf_u_int32 pos, bpf_u_int32 id_pos,
     return pos;
 }
 
+// Generates a hash from the current packet. 
 int dedup(bpf_u_int32 pos, struct pcap_pkthdr *header, u_char * packet,
           ip_info * ip, transport_info * trns, config * conf) {
     
@@ -1873,10 +1870,11 @@ int dedup(bpf_u_int32 pos, struct pcap_pkthdr *header, u_char * packet,
     for (i=0; i < conf->DEDUPS; i++) {
         if (hash == conf->dedup_hashes[i]) {
             // Found a match, return the fact.
+            fprintf(stderr, "Duplicate Packet: 0x%04x\n", hash);
             return 1;
         }
     }
-    
+   
     // There was no match. Replace the oldest dedup.
     conf->dedup_hashes[conf->dedup_pos] = hash;
     conf->dedup_pos = (conf->dedup_pos + 1) % conf->DEDUPS;
@@ -1895,7 +1893,6 @@ bpf_u_int32 dns_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
     dns_rr * last = NULL;
 
     if (header->len - pos < 12) {
-        printf("header length: %d\n", header->len);
         char * msg = escape_data(packet, id_pos, header->len);
         fprintf(stderr, "Truncated Packet(dns): %s\n", msg); 
         return 0;
