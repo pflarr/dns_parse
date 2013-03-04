@@ -205,6 +205,7 @@ typedef struct {
 void tcp_save_state(config *);
 tcp_info * tcp_load_state(config *);
 ip_fragment * ip_frag_add(ip_fragment *, config *);
+void ip_frag_free(config *);
 bpf_u_int32 dns_parse(bpf_u_int32, struct pcap_pkthdr *, u_char *, 
                       dns_info *, config *);
 void print_summary(ip_info *, transport_info *, dns_info *,
@@ -244,9 +245,10 @@ int main(int argc, char **argv) {
     int print_type_freq = 0;
     int arg_failure = 0;
 
-    const char * OPTIONS = "dfhm:MnurtD:x:s:";
+    const char * OPTIONS = "dfhm:MnurtD:x:s:S";
 
     // Setting configuration defaults.
+    u_char TCP_SAVE_STATE = 1;
     conf.EXCLUDES = 0;
     conf.RECORD_SEP = "";
     conf.SEP = '\t';
@@ -283,6 +285,9 @@ int main(int argc, char **argv) {
                 break;
             case 's':
                 conf.TCP_STATE_PATH = optarg;
+                break;
+            case 'S':
+                TCP_SAVE_STATE = 0;
                 break;
             case 't':
                 conf.PRETTY_DATE = 1; 
@@ -410,6 +415,8 @@ int main(int argc, char **argv) {
         "   This will be loaded (and overwritten) every time dns_parse \n"
         "   is run. \n"
         "   Default is: %s \n"
+        "-S \n"
+        "   Disable TCP state saving/loading.\n"
         "-t \n"
         "   Print the time/date as in Y/M/D H:M:S format.\n"
         "   The time will be in the local timezone.\n"
@@ -427,7 +434,9 @@ int main(int argc, char **argv) {
 
     // Load and prior TCP session info
     conf.tcp_sessions_head = NULL; 
-    //tcp_load_state(&conf);
+    if (TCP_SAVE_STATE == 1) {
+        tcp_load_state(&conf);
+    }
 
     conf.dedup_hashes = calloc(conf.DEDUPS, sizeof(unsigned long long));
  
@@ -435,10 +444,14 @@ int main(int argc, char **argv) {
     read = pcap_dispatch(pcap_file, -1, (pcap_handler)handler, 
                          (u_char *) &conf);
     
-    tcp_expire(&conf, NULL);
-    // XXX tcp_save_state(&conf);
+    if (TCP_SAVE_STATE == 1) {
+        tcp_save_state(&conf);
+    } else {
+        tcp_expire(&conf, NULL);
+    }
 
     free(conf.dedup_hashes);
+    ip_frag_free(&conf);
 
     return 0;
 }
@@ -1004,6 +1017,7 @@ ip_fragment * ip_frag_add(ip_fragment * this, config * conf) {
             (*found)->end = (*found)->end + child_len;
             (*found)->islast = child->islast;
             (*found)->child = child->child;
+            free(child->data);
             free(child);
         } else {
             found = &(*found)->child;
@@ -1023,6 +1037,23 @@ ip_fragment * ip_frag_add(ip_fragment * this, config * conf) {
     }
     // This is what happens when we don't complete a packet.
     return NULL;
+}
+
+// Free the lists of IP fragments.
+void ip_frag_free(config * conf) {
+    ip_fragment * curr;
+    ip_fragment * child;
+    
+    while (conf->ip_fragment_head != NULL) {
+        curr = conf->ip_fragment_head;
+        conf->ip_fragment_head = curr->next;
+        while (curr != NULL) {
+            child = curr->child;
+            free(curr->data);
+            free(curr);
+            curr = child;
+        }
+    }
 }
 
 u_short tcp_checksum(ip_info *ip, u_char *packet, 
@@ -1287,7 +1318,7 @@ void tcp_expire(config * conf, const struct timeval * now ) {
         char offset_found = 0;
         for (offset=0; offset < head->len-1; offset++) {
             unsigned long long pos = offset;
-            while (pos < head->len) {
+            while (pos + 1 < head->len) {
                 dns_len = TCP_DNS_LEN(head->data, pos);
                 // We shouldn't ever have an offset of 0.
                 if (dns_len == 0) break;
@@ -1303,8 +1334,9 @@ void tcp_expire(config * conf, const struct timeval * now ) {
         // If we couldn't find the right offset, just try an offset of 
         // zero as long as that offset isn't longer than all of our data.
         if (offset_found == 0) {
-            if (TCP_DNS_LEN(head->data, 0) < head->len &&
-                TCP_DNS_LEN(head->data, 0) > 12 ) {
+            if   (head->len > 2 && 
+                  TCP_DNS_LEN(head->data, 0) < head->len &&
+                  TCP_DNS_LEN(head->data, 0) > 12 ) {
                 offset = 0;
             } else { 
                 char * bad_data = escape_data(head->data, 0, head->len);
@@ -1316,7 +1348,12 @@ void tcp_expire(config * conf, const struct timeval * now ) {
         // Go through the stream offset by offset, create a fake packet
         // header (and packet data), and hand both off to the DNS parser.
         // The results are output.
-        dns_len = TCP_DNS_LEN(head->data, offset);
+        if (offset + 1 < head->len) {
+            dns_len = TCP_DNS_LEN(head->data, offset);
+        } else {
+            // Skip trying to parse this.
+            dns_len = head->len;
+        }
         while (offset + dns_len < head->len) {
             dns_info dns;
             ip_info ip;
@@ -1333,6 +1370,7 @@ void tcp_expire(config * conf, const struct timeval * now ) {
             trns.transport = TCP;
             ip.src = head->src;
             ip.dst = head->dst;
+            ip.proto = 0x06;
             DBG(printf("Parsing DNS (TCP).\n");)
             pos = dns_parse(offset + 2, &header, head->data, &dns, conf);
             if (pos != 0) {
@@ -1342,11 +1380,12 @@ void tcp_expire(config * conf, const struct timeval * now ) {
             if (pos != offset + 2 + dns_len) {
                 // If these don't match up, then there is no point in
                 // continuing for this session.
-                fprintf(stderr, "Mismatched TCP lengths.\n");
+                fprintf(stderr, "Mismatched TCP lengths: %u, %u.\n",
+                        pos, (offset + 2 + dns_len));
                 break;
             }
             offset += 2 + dns_len;
-            if (offset < head->len) {
+            if (offset + 1 < head->len) {
                 // We don't want to try to parse the length if we're past
                 // the end of the packet.
                 dns_len = TCP_DNS_LEN(head->data, offset);
@@ -1594,6 +1633,8 @@ void tcp_save_state(config * conf) {
                 return;
             }
             written = fwrite(data, sizeof(u_char), curr_pkt->len, outfile);
+            free(curr_pkt->data);
+            free(curr_pkt);
             if (written != curr_pkt->len) {
                 fprintf(stderr, "Could not write to tcp state file(data).\n");
                 fclose(outfile);
@@ -1888,7 +1929,6 @@ int dedup(bpf_u_int32 pos, struct pcap_pkthdr *header, u_char * packet,
     for (i=0; i < conf->DEDUPS; i++) {
         if (hash == conf->dedup_hashes[i]) {
             // Found a match, return the fact.
-            fprintf(stderr, "Duplicate Packet: 0x%016llx\n", hash);
             return 1;
         }
     }

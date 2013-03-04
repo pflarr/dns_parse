@@ -1,6 +1,6 @@
 build: bin/dns_parse
 
-DEBUG=-g
+#DEBUG=-g
 
 install:
 	mkdir -p ${DESTDIR}/usr/local/sbin/
