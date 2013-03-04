@@ -1,5 +1,7 @@
 build: bin/dns_parse
 
+DEBUG=-g
+
 install:
 	mkdir -p ${DESTDIR}/usr/local/sbin/
 	cp bin/* ${DESTDIR}/usr/local/sbin/
@@ -19,13 +21,13 @@ tar: clean
 
 bin/dns_parse: dns_parse.c rtypes.o strutils.o
 	mkdir -p bin
-	gcc rtypes.o strutils.o -o bin/dns_parse dns_parse.c -lpcap 
+	gcc ${DEBUG} rtypes.o strutils.o -o bin/dns_parse dns_parse.c -lpcap 
 
 rtypes.o: rtypes.c rtypes.h
-	gcc -g -c rtypes.c
+	gcc ${DEBUG} -c rtypes.c
 
 strutils.o: strutils.h strutils.c
-	gcc -g -c strutils.c
+	gcc ${DEBUG} -c strutils.c
 
 clean:
 	rm -f *.o

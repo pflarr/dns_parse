@@ -27,8 +27,6 @@
 // When debugging those areas, it's really nice to know what's going on
 // exactly at each point.
 
-#define eprintf(format, ...) fprintf(stderr, format, __VA_ARGS__)
-
 // Get the value of the BITth bit from byte offset O bytes from base B.
 #define GET_BIT(B,O,BIT) (unsigned char)(((*(B+O)) & (1 << (BIT))) >> BIT )
 // Get a two byte little endian u_int at base B and offset O.
@@ -163,7 +161,7 @@ typedef struct {
     bpf_u_int32 DEDUPS;
     tcp_info * tcp_sessions_head;
     ip_fragment * ip_fragment_head;
-    bpf_u_int32 * dedup_hashes;
+    unsigned long long * dedup_hashes;
     bpf_u_int32 dedup_pos;
     
 } config;
@@ -246,7 +244,7 @@ int main(int argc, char **argv) {
     int print_type_freq = 0;
     int arg_failure = 0;
 
-    const char * OPTIONS = "dfhm:Mnurtx:s:";
+    const char * OPTIONS = "dfhm:MnurtD:x:s:";
 
     // Setting configuration defaults.
     conf.EXCLUDES = 0;
@@ -258,6 +256,8 @@ int main(int argc, char **argv) {
     conf.PRINT_RR_NAME = 0;
     conf.MISSING_TYPE_WARNINGS = 0;
     conf.TCP_STATE_PATH = NULL;
+    conf.DEDUPS = 10;
+    conf.dedup_pos = 0;
 
     c = getopt(argc, argv, OPTIONS);
     while (c != -1) {
@@ -289,6 +289,12 @@ int main(int argc, char **argv) {
                 break;
             case 'u':
                 print_type_freq = 1;
+                break;
+            case 'D':
+                conf.DEDUPS = strtoul(optarg, NULL, 10);
+                if (conf.DEDUPS > 10000) {
+                    conf.DEDUPS = 10000;
+                }
                 break;
             case 'x':
                 if (conf.EXCLUDES < MAX_EXCLUDES) {
@@ -331,7 +337,7 @@ int main(int argc, char **argv) {
     if (optind == argc - 1) {
         pcap_file = pcap_open_offline(argv[optind], errbuf);
         if (pcap_file == NULL) {
-            printf("Could not open pcapfile.\n%s\n", errbuf);
+            fprintf(stderr, "Could not open pcapfile.\n%s\n", errbuf);
             return -1;
         }
     } else if (optind >= argc) {
@@ -360,12 +366,14 @@ int main(int argc, char **argv) {
         "  query/response - is it a query(q) or response(r)\n"
         "  authoritative - marked with AA if authoritative\n\n"
         "The resource records are printed after these fields, separated by\n"
-        "a tab (a newline in multiline mode). Each section of records\n"
-        "is preceeded by a separate record containing only the section name:\n"
-        "(Questions, Answers, Name Servers, Additional)\n"
+        "a tab (a newline in multiline mode). \n"
         "By default the resource record format is:\n"
-        "<name> <type> <class> <rdata>\n\n"
-        "Query records are the same, except without the <rdata>\n"
+        "<section> <name> <type> <class> <rdata>\n\n"
+        "<section> is a symbol denoting record type.\n"
+        "    ? - Questions (No rdata is included or printed).\n"
+        "    ! - Answers\n"
+        "    $ - Name Servers\n"
+        "    + - Additional\n"
         "The rdata is parsed by a custom parser that depends on the\n"
         "record type and class. Use the -f option to get a list of\n"
         "the supported record types and documentation on the parsers.\n\n"
@@ -374,6 +382,11 @@ int main(int argc, char **argv) {
         "-d\n"
         "   Enable the parsing and output of the Additional\n"
         "   Records section. Disabled by default.\n"
+        "-D <count>\n"
+        "   Keep hashes of the last <count> packets for de-duplication\n"
+        "   purposes (max 10,000). A <count> of zero turns off \n"
+        "   de-duplication. \n"
+        "   Default 10.\n"
         "-f\n"
         "   Print out documentation on the various resource \n"
         "   record parsers.\n"
@@ -389,7 +402,7 @@ int main(int argc, char **argv) {
         "   parser.\n"
         "-r \n"
         "   Changes the resource record format to: \n"
-        "   <name> <rr_type_name> <rdata>\n"
+        "   <section> <name> <rr_type_name> <rdata>\n"
         "   If the record type isn't known, 'UNKNOWN(<cls>,<type>)' is given\n"
         "   The query record format is the similar, but missing the rdata.\n"
         "-s<path> \n"
@@ -416,9 +429,7 @@ int main(int argc, char **argv) {
     conf.tcp_sessions_head = NULL; 
     //tcp_load_state(&conf);
 
-    conf.DEDUPS = 100;
-    conf.dedup_pos = 0;
-    conf.dedup_hashes = calloc(conf.DEDUPS, sizeof(bpf_u_int32));
+    conf.dedup_hashes = calloc(conf.DEDUPS, sizeof(unsigned long long));
  
     // need to check this for overflow.
     read = pcap_dispatch(pcap_file, -1, (pcap_handler)handler, 
@@ -470,7 +481,7 @@ void handler(u_char * args, const struct pcap_pkthdr *orig_header,
     } else if (eth.ethtype == 0x86DD) {
         pos = ipv6_parse(pos, &header, &packet, &ip, conf);
     } else {
-        printf("Unsupported EtherType: %04x\n", eth.ethtype);
+        fprintf(stderr, "Unsupported EtherType: %04x\n", eth.ethtype);
         return;
     }
     if (packet == NULL) return;
@@ -482,9 +493,12 @@ void handler(u_char * args, const struct pcap_pkthdr *orig_header,
         transport_info udp;
         pos = udp_parse(pos, &header, packet, &udp, conf);
         if ( pos == 0 ) return;
-        if (dedup(pos, &header, packet, &ip, &udp, conf) == 1) {
-            // A duplicate packet.
-            return;
+        // Only do deduplication if DEDUPS > 0.
+        if (conf->DEDUPS != 0 ) {
+            if (dedup(pos, &header, packet, &ip, &udp, conf) == 1) {
+                // A duplicate packet.
+                return;
+            }
         }
         pos = dns_parse(pos, &header, packet, &dns, conf);
         print_summary(&ip, &udp, &dns, &header, conf);
@@ -508,7 +522,7 @@ bpf_u_int32 eth_parse(struct pcap_pkthdr *header, u_char *packet,
     int i;
 
     if (header->len < 14) {
-        printf("Truncated Packet(eth)\n");
+        fprintf(stderr, "Truncated Packet(eth)\n");
         return 0;
     }
 
@@ -550,7 +564,7 @@ bpf_u_int32 mpls_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
         VERBOSE(printf("MPLS Layer.\n");)
         // Deal with truncated MPLS.
         if (header->len < (pos + 4)) {
-            printf("Truncated Packet(mpls)\n");
+            fprintf(stderr, "Truncated Packet(mpls)\n");
             return 0;
         }
         
@@ -560,7 +574,7 @@ bpf_u_int32 mpls_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
     } while (bos == 0);
 
     if (header->len < pos) {
-        printf("Truncated Packet(post mpls)\n");
+        fprintf(stderr, "Truncated Packet(post mpls)\n");
         return 0;
     }
 
@@ -593,7 +607,7 @@ bpf_u_int32 ipv4_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
     u_char * packet = *p_packet;
 
     if (header-> len - pos < 20) {
-        printf("Truncated Packet(ipv4)\n");
+        fprintf(stderr, "Truncated Packet(ipv4)\n");
         p_packet = NULL;
         return 0;
     }
@@ -667,7 +681,7 @@ bpf_u_int32 ipv6_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
     bpf_u_int32 header_len = 0;
 
     if (header->len < (pos + 40)) {
-        printf("Truncated Packet(ipv6)\n");
+        fprintf(stderr, "Truncated Packet(ipv6)\n");
         p_packet=NULL; return 0;
     }
     ip->length = (packet[pos+4] << 8) + packet[pos+5];
@@ -699,7 +713,7 @@ bpf_u_int32 ipv6_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
             case IPPROTO_DSTOPTS:
             case IPPROTO_ROUTING:
                 if (header->len < (pos + 40)) {
-                    printf("Truncated Packet(ipv6)\n");
+                    fprintf(stderr, "Truncated Packet(ipv6)\n");
                     p_packet = NULL; return 0;
                 }
                 next_hdr = packet[pos];
@@ -709,34 +723,35 @@ bpf_u_int32 ipv6_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
                 break;
             case 51: // Authentication Header. See RFC4302
                 if (header->len < (pos + 2)) {
-                    printf("Truncated Packet(ipv6)\n");
+                    fprintf(stderr, "Truncated Packet(ipv6)\n");
                     p_packet = NULL; return 0;
                 } 
                 next_hdr = packet[pos];
                 header_len += (packet[pos+1] + 2) * 4;
                 pos += (packet[pos+1] + 2) * 4;
                 if (header->len < pos) {
-                    printf("Truncated Packet(ipv6)\n");
+                    fprintf(stderr, "Truncated Packet(ipv6)\n");
                     p_packet = NULL; return 0;
                 } 
+                break;
             case 50: // ESP Protocol. See RFC4303.
                 // We don't support ESP.
-                printf("Unsupported protocol: IPv6 ESP.\n");
+                fprintf(stderr, "Unsupported protocol: IPv6 ESP.\n");
                 if (frag != NULL) free(frag);
-                p_packet = NULL;
-                return 0;
+                p_packet = NULL; return 0;
             case 135: // IPv6 Mobility See RFC 6275
                 if (header->len < (pos + 2)) {
-                    printf("Truncated Packet(ipv6)\n");
+                    fprintf(stderr, "Truncated Packet(ipv6)\n");
                     p_packet = NULL; return 0;
                 }  
                 next_hdr = packet[pos];
                 header_len += packet[pos+1] * 8;
                 pos += packet[pos+1] * 8;
                 if (header->len < pos) {
-                    printf("Truncated Packet(ipv6)\n");
+                    fprintf(stderr, "Truncated Packet(ipv6)\n");
                     p_packet = NULL; return 0;
                 } 
+                break;
             case IPPROTO_FRAGMENT:
                 // IP fragment.
                 next_hdr = packet[pos];
@@ -752,11 +767,11 @@ bpf_u_int32 ipv6_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
                 break;
             default:
                 // All non ipv6 extension protocols
-                ip->proto = next_hdr;
                 done = 1;
         }
     }
 
+    ip->proto = next_hdr;
     ip->length = ip->length - header_len;
     
     // Handle fragments.
@@ -793,7 +808,7 @@ bpf_u_int32 udp_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
                       config * conf) {
     u_short test;
     if (header->len - pos < 8) {
-        printf("Truncated Packet(udp)\n");
+        fprintf(stderr, "Truncated Packet(udp)\n");
         return 0;
     }
 
@@ -1833,35 +1848,38 @@ bpf_u_int32 parse_rr_set(bpf_u_int32 pos, bpf_u_int32 id_pos,
 int dedup(bpf_u_int32 pos, struct pcap_pkthdr *header, u_char * packet,
           ip_info * ip, transport_info * trns, config * conf) {
     
-    bpf_u_int32 hash = 0;
+    unsigned long long hash = 0;
+    unsigned long long mask = 0xffffffffffffffff;
     bpf_u_int32 i;
 
+    // Put the hash of the src address in the upper 32 bits,
+    // and the dest in the lower 32.
     if (ip->src.vers == IPv4) {
-        hash += ip->src.addr.v4.s_addr;
+        hash += ((unsigned long long)ip->src.addr.v4.s_addr << 32);
         hash += ip->dst.addr.v4.s_addr;
     } else {
         for (i=0; i<4; i++) {
-            hash += ip->src.addr.v6.s6_addr32[i];
+            hash += (unsigned long long)ip->src.addr.v6.s6_addr32[i] << 32;
             hash += ip->dst.addr.v6.s6_addr32[i];
         }
     }
-
-    hash += trns->srcport;
-    hash += trns->dstport;
+    hash += ((unsigned long long)trns->srcport << 32) + trns->dstport;
     
     // Add in the payload.
-    for (; pos + 4 < header->len; pos+=4) {
-        hash += *(bpf_u_int32 *)(packet + pos);
+    for (; pos + 8 < header->len; pos+=8) {
+        hash += *(unsigned long long*)(packet + pos);
     }   
-    // Add in those last bytes, if any.
-    hash += (*(bpf_u_int32 *)(packet + pos)) & 
-                    !(0xffffffff >> (8*(header->len - pos)));
+    // Add in those last bytes, if any. 
+    // Where doesn't matter, as long as we're consistent.
+    for (; pos < header->len; pos++) {
+        hash += packet[pos];
+    }
     // Without this, all strings of nulls are equivalent.
     hash += header->len;
     // The hash is now done.
 
     if (hash == 0) {
-        // Print the packet anyway. 
+        // Say it's not a duplicate even though it might be.
         // Since we initialize the dedup list to zero's, it's likely that
         // this will produce a false positive.
         return 0;
@@ -1870,7 +1888,7 @@ int dedup(bpf_u_int32 pos, struct pcap_pkthdr *header, u_char * packet,
     for (i=0; i < conf->DEDUPS; i++) {
         if (hash == conf->dedup_hashes[i]) {
             // Found a match, return the fact.
-            fprintf(stderr, "Duplicate Packet: 0x%04x\n", hash);
+            fprintf(stderr, "Duplicate Packet: 0x%016llx\n", hash);
             return 1;
         }
     }
@@ -1972,4 +1990,3 @@ void print_rr_section(dns_rr * next, char * name, config * conf) {
         next = next->next; 
     }
 }
-
