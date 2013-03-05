@@ -1,11 +1,12 @@
+#include <arpa/inet.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include "protocols.h"
+#include <string.h>
 #include "network.h"
 
-bpf_u_int32 eth_parse(struct pcap_pkthdr *header, u_char *packet,
-                      eth_info * eth) {
-    bpf_u_int32 pos = 0;
+uint32_t eth_parse(struct pcap_pkthdr *header, uint8_t *packet,
+                   eth_info * eth) {
+    uint32_t pos = 0;
 
     int i;
 
@@ -44,10 +45,10 @@ bpf_u_int32 eth_parse(struct pcap_pkthdr *header, u_char *packet,
 
 // Parse MPLS. We don't care about the data in these headers, all we have
 // to do is continue parsing them until the 'bottom of stack' flag is set.
-bpf_u_int32 mpls_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
-                       u_char *packet, eth_info * eth) {
+uint32_t mpls_parse(uint32_t pos, struct pcap_pkthdr *header,
+                    uint8_t *packet, eth_info * eth) {
     // Bottom of stack flag.
-    u_char bos;
+    uint8_t bos;
     do {
         VERBOSE(printf("MPLS Layer.\n");)
         // Deal with truncated MPLS.
@@ -69,7 +70,7 @@ bpf_u_int32 mpls_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
 
     // 'Guess' the next protocol. This can result in false positives, but
     // generally not.
-    u_char ip_ver = packet[pos] >> 4;
+    uint8_t ip_ver = packet[pos] >> 4;
     switch (ip_ver) {
         case IPv4:
             eth->ethtype = 0x0800; break;
@@ -82,17 +83,17 @@ bpf_u_int32 mpls_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
     return pos;
 }
 
-bpf_u_int32 ipv4_parse(bpf_u_int32 pos, struct pcap_pkthdr *header, 
-                       u_char ** p_packet, ip_info * ip, config * conf) {
+uint32_t ipv4_parse(uint32_t pos, struct pcap_pkthdr *header, 
+                    uint8_t ** p_packet, ip_info * ip, config * conf) {
 
-    bpf_u_int32 h_len;
+    uint32_t h_len;
     int i;
     ip_fragment * frag = NULL;
-    u_char frag_mf;
-    u_short frag_offset;
+    uint8_t frag_mf;
+    uint16_t frag_offset;
     
     // For convenience and code consistency, dereference the packet **.
-    u_char * packet = *p_packet;
+    uint8_t * packet = *p_packet;
 
     if (header-> len - pos < 20) {
         fprintf(stderr, "Truncated Packet(ipv4)\n");
@@ -131,11 +132,11 @@ bpf_u_int32 ipv4_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
         // We don't try to deal with endianness here, since it 
         // won't matter as long as we're consistent.
         frag->islast = !frag_mf;
-        frag->id = *((u_short *)(packet + pos + 4));
+        frag->id = *((uint16_t *)(packet + pos + 4));
         frag->src = ip->src;
         frag->dst = ip->dst;
         frag->end = frag->start + ip->length;
-        frag->data = malloc(sizeof(u_char) * ip->length);
+        frag->data = malloc(sizeof(uint8_t) * ip->length);
         frag->next = frag->child = NULL;
         memcpy(frag->data, packet + pos + 4*h_len, ip->length);
         // Add the fragment to the list.
@@ -158,15 +159,15 @@ bpf_u_int32 ipv4_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
 
 }
 
-bpf_u_int32 ipv6_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
-                       u_char ** p_packet, ip_info * ip, config * conf) {
+uint32_t ipv6_parse(uint32_t pos, struct pcap_pkthdr *header,
+                    uint8_t ** p_packet, ip_info * ip, config * conf) {
 
     // For convenience and code consistency, dereference the packet **.
-    u_char * packet = *p_packet;
+    uint8_t * packet = *p_packet;
 
     // In case the IP packet is a fragment.
     ip_fragment * frag = NULL;
-    bpf_u_int32 header_len = 0;
+    uint32_t header_len = 0;
 
     if (header->len < (pos + 40)) {
         fprintf(stderr, "Truncated Packet(ipv6)\n");
@@ -183,7 +184,7 @@ bpf_u_int32 ipv6_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
         p_packet=NULL; return 0;
     }
 
-    u_char next_hdr = packet[pos+6];
+    uint8_t next_hdr = packet[pos+6];
     VERBOSE(print_packet(header->len, packet, pos, pos+40, 4);)
     VERBOSE(printf("IPv6 src: %s, ", iptostr(&ip->src));)
     VERBOSE(printf("IPv6 dst: %s\n", iptostr(&ip->dst));)
@@ -191,7 +192,7 @@ bpf_u_int32 ipv6_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
    
     // We pretty much have no choice but to parse all extended sections,
     // since there is nothing to tell where the actual data is.
-    u_char done = 0;
+    uint8_t done = 0;
     while (done == 0) {
         VERBOSE(printf("IPv6, next header: %u\n", next_hdr);)
         switch (next_hdr) {
@@ -248,7 +249,7 @@ bpf_u_int32 ipv6_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
                 frag->islast = packet[pos+3] & 0x01;
                 // We don't try to deal with endianness here, since it 
                 // won't matter as long as we're consistent.
-                frag->id = *(bpf_u_int32 *)(packet+pos+4);
+                frag->id = *(uint32_t *)(packet+pos+4);
                 // The headers are 8 bytes longer.
                 header_len += 8;
                 pos += 8;
@@ -268,7 +269,7 @@ bpf_u_int32 ipv6_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
         frag->dst = ip->dst;
         frag->end = frag->start + ip->length;
         frag->next = frag->child = NULL;
-        frag->data = malloc(sizeof(u_char) * ip->length);
+        frag->data = malloc(sizeof(uint8_t) * ip->length);
         VERBOSE(printf("IPv6 fragment. offset: %d, m:%u\n", frag->start,
                                                             frag->islast);)
         memcpy(frag->data, packet+pos, ip->length);
@@ -369,9 +370,9 @@ ip_fragment * ip_frag_add(ip_fragment * this, config * conf) {
             DBG(printf("Merging frag at offset %u-%u with %u-%u\n", 
                         (*found)->start, (*found)->end,
                         child->start, child->end);)
-            bpf_u_int32 child_len = child->end - child->start;
-            bpf_u_int32 fnd_len = (*found)->end - (*found)->start;
-            u_char * buff = malloc(sizeof(u_char) * (fnd_len + child_len));
+            uint32_t child_len = child->end - child->start;
+            uint32_t fnd_len = (*found)->end - (*found)->start;
+            uint8_t * buff = malloc(sizeof(uint8_t) * (fnd_len + child_len));
             memcpy(buff, (*found)->data, fnd_len);
             memcpy(buff + fnd_len, child->data, child_len);
             (*found)->end = (*found)->end + child_len;
@@ -417,10 +418,10 @@ void ip_frag_free(config * conf) {
 }
 
 // Parse the udp headers.
-bpf_u_int32 udp_parse(bpf_u_int32 pos, struct pcap_pkthdr *header, 
-                      u_char *packet, transport_info * udp, 
-                      config * conf) {
-    u_short test;
+uint32_t udp_parse(uint32_t pos, struct pcap_pkthdr *header, 
+                   uint8_t *packet, transport_info * udp, 
+                   config * conf) {
+    uint16_t test;
     if (header->len - pos < 8) {
         fprintf(stderr, "Truncated Packet(udp)\n");
         return 0;
@@ -434,4 +435,17 @@ bpf_u_int32 udp_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
     VERBOSE(printf("srcport: %d, dstport: %d, len: %d\n", udp->srcport, udp->dstport, udp->length);)
     SHOW_RAW(print_packet(header->len, packet, pos, pos, 4);)
     return pos + 8;
+}
+
+// Convert an ip struct to a string. The returned buffer is internal, 
+// and need not be freed. 
+inline char * iptostr(ip_addr * ip) {
+    if (ip->vers == IPv4) {
+        inet_ntop(AF_INET, (const void *) &(ip->addr.v4),
+                  IP_STR_BUFF, INET6_ADDRSTRLEN);
+    } else { // IPv6
+        inet_ntop(AF_INET6, (const void *) &(ip->addr.v6),
+                  IP_STR_BUFF, INET6_ADDRSTRLEN);
+    }
+    return IP_STR_BUFF;
 }

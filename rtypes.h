@@ -2,23 +2,23 @@
 #define __RTYPES_H__
 
 #include <pcap.h>
-#include "types.h"
+#include <stdint.h>
 
-typedef char * rr_data_parser(const u_char*, bpf_u_int32, bpf_u_int32, 
-                              u_short, bpf_u_int32);
+typedef char * rr_data_parser(const uint8_t*, uint32_t, uint32_t, 
+                              uint16_t, uint32_t);
 
 typedef struct {
-    u_short cls;
-    u_short rtype;
+    uint16_t cls;
+    uint16_t rtype;
     rr_data_parser * parser;
     const char * name;
     const char * doc;
     unsigned long long count;
 } rr_parser_container;
 
-rr_parser_container * find_parser(u_short, u_short);
+rr_parser_container * find_parser(uint16_t, uint16_t);
 
-char * read_dns_name(u_char *, bpf_u_int32, bpf_u_int32); 
+char * read_dns_name(uint8_t *, uint32_t, uint32_t); 
 
 rr_data_parser opts;
 rr_data_parser escape;

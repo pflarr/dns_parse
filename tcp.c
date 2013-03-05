@@ -3,18 +3,17 @@
 #include <string.h>
 #include <pcap.h>
 #include <sys/stat.h>
-#include "protocols.h"
 #include "strutils.h"
 #include "tcp.h"
 
-u_short tcp_checksum(ip_info *ip, u_char *packet, 
-                     bpf_u_int32 pos, struct pcap_pkthdr *header) {
+uint16_t tcp_checksum(ip_info *ip, uint8_t *packet, 
+                     uint32_t pos, struct pcap_pkthdr *header) {
     unsigned int sum = 0;
     unsigned int i;
 
     if (ip->src.vers == IPv4) {
-        bpf_u_int32 srcip = ip->src.addr.v4.s_addr; 
-        bpf_u_int32 dstip = ip->dst.addr.v4.s_addr; 
+        uint32_t srcip = ip->src.addr.v4.s_addr; 
+        uint32_t dstip = ip->dst.addr.v4.s_addr; 
       
         // Put together the psuedo-header preamble for the checksum calculation.
         // I handle the IP's in a rather odd manner and save a few cycles.
@@ -27,8 +26,8 @@ u_short tcp_checksum(ip_info *ip, u_char *packet,
         sum += ip->proto;
         sum += ip->length;
     } else {
-        u_short * src_v6 = ip->src.addr.v6.s6_addr16;
-        u_short * dst_v6 = ip->dst.addr.v6.s6_addr16;
+        uint16_t * src_v6 = ip->src.addr.v6.s6_addr16;
+        uint16_t * dst_v6 = ip->dst.addr.v6.s6_addr16;
         for (i=0; i<8; i++) {
             sum += (src_v6[i] >> 8) + ((src_v6[i] & 0xff) << 8);
             sum += (dst_v6[i] >> 8) + ((dst_v6[i] & 0xff) << 8);
@@ -75,8 +74,8 @@ u_short tcp_checksum(ip_info *ip, u_char *packet,
       TCP_EXPIRE_USECS
 
 // Parse the tcp data, and put it in our lists to be reassembled later.
-void tcp_parse(bpf_u_int32 pos, struct pcap_pkthdr *header, 
-               u_char *packet, ip_info *ip, config * conf) {
+void tcp_parse(uint32_t pos, struct pcap_pkthdr *header, 
+               uint8_t *packet, ip_info *ip, config * conf) {
     // This packet.
     tcp_info * tcp;
     // For traversing the session list.
@@ -85,9 +84,9 @@ void tcp_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
     tcp_info * sess = NULL;
     int i;
     unsigned int offset;
-    bpf_u_int32 data_len;
-    u_short checksum;
-    u_short actual_checksum;
+    uint32_t data_len;
+    uint16_t checksum;
+    uint16_t actual_checksum;
    
     tcp = malloc(sizeof(tcp_info));
 
@@ -191,7 +190,7 @@ void tcp_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
     }
 
     tcp_info * c_next = conf->tcp_sessions_head;
-    bpf_u_int32 sess_total = 0;
+    uint32_t sess_total = 0;
     while (c_next != NULL) {
         DBG(printf("Sessions[%d] - %p: ", sess_total, c_next);)
         DBG(tcp_print(c_next);)
@@ -256,7 +255,7 @@ void tcp_expire(config * conf, const struct timeval * now ) {
     // With TCP DNS, the DNS data is prepended with a two byte length,
     // so we at least know how long it is. 
     while (head != NULL) {
-        bpf_u_int32 size = (head->data[0] << 8) + head->data[1];
+        uint32_t size = (head->data[0] << 8) + head->data[1];
         
         // There is a possiblity that this session won't start at the
         // the beginning of the data; that we've caught a session mid-stream.
@@ -310,7 +309,7 @@ void tcp_expire(config * conf, const struct timeval * now ) {
             ip_info ip;
             transport_info trns;
             struct pcap_pkthdr header;
-            bpf_u_int32 pos;
+            uint32_t pos;
 
             header.ts = head->ts;
             header.caplen = head->len;
@@ -323,16 +322,18 @@ void tcp_expire(config * conf, const struct timeval * now ) {
             ip.dst = head->dst;
             ip.proto = 0x06;
             DBG(printf("Parsing DNS (TCP).\n");)
-            pos = dns_parse(offset + 2, &header, head->data, &dns, conf);
+            pos = dns_parse(offset + 2, &header, head->data, &dns, conf, 1);
             if (pos != 0) {
                 print_summary(&ip, &trns, &dns, &header, conf);
             }
-           
+        
             if (pos != offset + 2 + dns_len) {
                 // If these don't match up, then there is no point in
                 // continuing for this session.
                 fprintf(stderr, "Mismatched TCP lengths: %u, %llu.\n",
                         pos, (offset + 2 + dns_len));
+                fprintf(stderr, "h->len %u\n", head->len);
+                print_packet(head->len, head->data, pos, head->len, 8);
                 break;
             }
             offset += 2 + dns_len;
@@ -362,20 +363,20 @@ void tcp_expire(config * conf, const struct timeval * now ) {
 tcp_info * tcp_assemble(tcp_info * base) {
     tcp_info **curr;
     tcp_info *origin = NULL;
-    bpf_u_int32 curr_seq;
+    uint32_t curr_seq;
     // We'll keep track of the total size of data to copy.
     long long total_length = 0;
     // Where we are in the copying.
     long long pos = 0;
     // The actual data pointer for the final data.
-    u_char * final_data;
+    uint8_t * final_data;
 
     // All the pieces of data to reassemble.
     char ** data_chain;
     // The sizes of each piece.
-    bpf_u_int32 * data_lengths;
+    uint32_t * data_lengths;
     size_t dc_i = 0;
-    bpf_u_int32 i;
+    uint32_t i;
     
     DBG(printf("In TCP_assembly.\n");)
     DBG(printf("Assembling:\n");)
@@ -390,7 +391,7 @@ tcp_info * tcp_assemble(tcp_info * base) {
     }
     DBG(printf("Making the data_chain vars.\n");)
     data_chain = malloc(sizeof(char *) * dc_i);
-    data_lengths = malloc(sizeof(bpf_u_int32) * dc_i);
+    data_lengths = malloc(sizeof(uint32_t) * dc_i);
     for (i=0; i<dc_i; i++) {
         data_chain[i] = NULL;
         data_lengths[i] = 0;
@@ -517,7 +518,7 @@ tcp_info * tcp_assemble(tcp_info * base) {
     // We'll skip combining the data, and just free the chain, if there 
     // isn't any data to deal with.
     if (total_length > 0) {
-        final_data = malloc(sizeof(u_char) * total_length);
+        final_data = malloc(sizeof(uint8_t) * total_length);
         for(i=0; i < dc_i; i++) {
             if (data_chain[i] != NULL) { 
                 memcpy(final_data + pos, data_chain[i], data_lengths[i]);
@@ -569,7 +570,7 @@ void tcp_save_state(config * conf) {
         next = next->next_sess;
         while (curr_pkt != NULL) {
             tcp_info * prev_pkt = curr_pkt->prev_pkt;
-            u_char * data = curr_pkt->data;
+            uint8_t * data = curr_pkt->data;
             size_t written;
             // Clear all or pointers, or turn them into flags.
             curr_pkt->next_sess = NULL;
@@ -583,7 +584,7 @@ void tcp_save_state(config * conf) {
                 fclose(outfile);
                 return;
             }
-            written = fwrite(data, sizeof(u_char), curr_pkt->len, outfile);
+            written = fwrite(data, sizeof(uint8_t), curr_pkt->len, outfile);
             free(curr_pkt->data);
             free(curr_pkt);
             if (written != curr_pkt->len) {
@@ -638,8 +639,8 @@ tcp_info * tcp_load_state(config * conf) {
         has_prev = (pkt->prev_pkt == NULL);
         pkt->prev_pkt = NULL;
         
-        pkt->data = malloc(sizeof(u_char) * pkt->len);
-        read = fread(pkt->data, sizeof(u_char), pkt->len, infile);
+        pkt->data = malloc(sizeof(uint8_t) * pkt->len);
+        read = fread(pkt->data, sizeof(uint8_t), pkt->len, infile);
         if (read != pkt->len) {
             // We are failing to free the memory of anything read in so far.
             // It's probably not a big deal.

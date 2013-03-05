@@ -1,16 +1,12 @@
-//#define __STRUTILS_TESTING__
-
-#ifdef __STRUTILS_TESTING__
-#include <stdio.h>
-#include <string.h>
-#endif
-
 #include <pcap.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
 
-char * escape_data(const u_char * packet, bpf_u_int32 start, bpf_u_int32 end) { 
+char * escape_data(const uint8_t * packet, uint32_t start, uint32_t end) { 
     int i,o;
-    u_char c, upper, lower;
+    uint8_t c, upper, lower;
     unsigned int length=1;
 
     char * outstr;
@@ -45,16 +41,16 @@ char * escape_data(const u_char * packet, bpf_u_int32 start, bpf_u_int32 end) {
     return outstr;
 }
 
-char * read_rr_name(const u_char * packet, bpf_u_int32 * packet_p, 
-                    bpf_u_int32 id_pos, bpf_u_int32 len) {
+char * read_rr_name(const uint8_t * packet, uint32_t * packet_p, 
+                    uint32_t id_pos, uint32_t len) {
     
-    bpf_u_int32 i, next, pos=*packet_p;
-    bpf_u_int32 end_pos = 0;
-    bpf_u_int32 name_len=0;
-    bpf_u_int32 steps = 0;
+    uint32_t i, next, pos=*packet_p;
+    uint32_t end_pos = 0;
+    uint32_t name_len=0;
+    uint32_t steps = 0;
     char * name;
     int bc = 0;
-    unsigned char badchars[2000];
+    uint8_t badchars[2000];
 
     // Scan through the name, one character at a time. We need to look at 
     // each character to look for values we can't print in order to allocate
@@ -67,7 +63,7 @@ char * read_rr_name(const u_char * packet, bpf_u_int32 * packet_p,
     next = pos;
     while (pos < len && !(next == pos && packet[pos] == 0)
            && steps < len*2) {
-        unsigned char c = packet[pos];
+        uint8_t c = packet[pos];
         steps++;
         if (next == pos) {
             // Handle message compression.  
@@ -126,7 +122,7 @@ char * read_rr_name(const u_char * packet, bpf_u_int32 * packet_p,
                 pos++;
             }
         } else {
-            unsigned char c = packet[pos];
+            uint8_t c = packet[pos];
             if (c >= '!' && c <= '~' && c != '\\') {
                 name[i] = packet[pos];
                 i++; pos++;
@@ -151,11 +147,11 @@ char * read_rr_name(const u_char * packet, bpf_u_int32 * packet_p,
 
 static const char cb64[]="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-char * b64encode(const u_char * data, bpf_u_int32 pos, u_short length) {
+char * b64encode(const uint8_t * data, uint32_t pos, uint16_t length) {
     char * out;
-    u_char next, last, bits = 24;
-    bpf_u_int32 end_pos = pos + length;
-    bpf_u_int32 op = 0;
+    uint8_t next, last, bits = 24;
+    uint32_t end_pos = pos + length;
+    uint32_t op = 0;
    
     // We allocate a little extra here sometimes, but in this application
     // these strings are almost immediately de-allocated anyway.
@@ -194,7 +190,7 @@ char * b64encode(const u_char * data, bpf_u_int32 pos, u_short length) {
 #ifdef __STRUTILS_TESTING__
 int main() {
 
-    u_char * ed_data = "  "
+    uint8_t * ed_data = "  "
                     "\x00\x0f\x10\x1f\x5c\x7f" // 6
                     "abcdefghijklmnopqrstuvwxyz" // 26
                     "1234567890" // 10
@@ -205,12 +201,12 @@ int main() {
     char * s = escape_data(ed_data, 2, 103);
     char * result = "\\x00\\x0f\\x10\\x1f\\x5c\\x7fabcdefghijklmnopqrstuvwxyz1234567890ZYXWVUTSRQPONMLKJIHGFEDCBA+_)(*&^%$#@!~`-=[]{}|;':<>?,./\\x5c \"";
     
-    u_char * name_data = "5junk\x03rat\x04\x7f\x00\xe3\\\x03gov\x00tenjunkchr"
+    uint8_t * name_data = "5junk\x03rat\x04\x7f\x00\xe3\\\x03gov\x00tenjunkchr"
                          "\x05hello\x03the\xc0\x01";
     const char * name_result = "hello.the.rat.\\x7f\\x00\\xe3\\x5c.gov";
-    bpf_u_int32 pos;
+    uint32_t pos;
     int i;
-    u_char b64data[256];
+    uint8_t b64data[256];
     char * b64result;
     char * b64t1 = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn+AgYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmqq6ytrq+wsbKztLW2t7i5uru8vb6/wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t/g4eLj5OXm5+jp6uvs7e7v8PHy8/T19vf4+fr7/P3+/w==";
     char * b64t2 = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4/QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl9gYWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1+f4CBgoOEhYaHiImKi4yNjo+QkZKTlJWWl5iZmpucnZ6foKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr/AwcLDxMXGx8jJysvMzc7P0NHS09TV1tfY2drb3N3e3+Dh4uPk5ebn6Onq6+zt7u/w8fLz9PX29/j5+vv8/f7/";

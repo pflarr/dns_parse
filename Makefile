@@ -19,7 +19,7 @@ tar: clean
 	tar -czf dns_parse-${version}.tar.gz dns_parse-${version}
 	rm -rf dns_parse-${version}
 
-OBJ=rtypes.o strutils.o network.o tcp.o protocols.o
+OBJ=rtypes.o strutils.o network.o tcp.o
 
 bin/dns_parse: dns_parse.c ${OBJ}
 	mkdir -p bin
@@ -31,15 +31,11 @@ rtypes.o: rtypes.c rtypes.h
 strutils.o: strutils.h strutils.c
 	gcc ${DEBUG} -c strutils.c
 
-tcp.o: protocols.h tcp.h tcp.c main.h
+tcp.o:  tcp.h tcp.c dns_parse.h
 	gcc ${DEBUG} -c tcp.c
 
-network.o: protocols.h network.h network.c main.h
+network.o:  network.h network.c dns_parse.h
 	gcc ${DEBUG} -c network.c
-
-protocols.o: protocols.h 
-	gcc ${DEBUG} -c protocols.c
-
 
 clean:
 	rm -f *.o

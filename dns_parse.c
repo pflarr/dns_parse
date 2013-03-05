@@ -6,27 +6,25 @@
 #include <string.h>
 #include <time.h>
 
-#include "protocols.h"
 #include "network.h"
 #include "tcp.h"
 #include "rtypes.h"
-#include "types.h"
 #include "strutils.h"
 
 // If you want a reasonable place to start walking through the code, 
 // go to the 'handler' function at the end.
                     
 #define DEFAULT_TCP_STATE_PATH "/tmp/dnsparse_tcp.state"
-void handler(u_char *, const struct pcap_pkthdr *, const u_char *);
+void handler(uint8_t *, const struct pcap_pkthdr *, const uint8_t *);
 void dns_rr_free(dns_rr *);
 void dns_question_free(dns_question *);
-bpf_u_int32 parse_rr(bpf_u_int32, bpf_u_int32, struct pcap_pkthdr *, 
-                     u_char *, dns_rr *, config *);
+uint32_t parse_rr(uint32_t, uint32_t, struct pcap_pkthdr *, 
+                  uint8_t *, dns_rr *, config *);
 void print_summary(ip_info *, transport_info *, dns_info *,
                    struct pcap_pkthdr *, config *);
 void print_rr_section(dns_rr *, char *, config *);
-void print_packet(bpf_u_int32, u_char *, bpf_u_int32, bpf_u_int32, u_int);
-int dedup(bpf_u_int32, struct pcap_pkthdr *, u_char *,
+void print_packet(uint32_t, uint8_t *, uint32_t, uint32_t, u_int);
+int dedup(uint32_t, struct pcap_pkthdr *, uint8_t *,
           ip_info *, transport_info *, config *);
 
 int main(int argc, char **argv) {
@@ -40,10 +38,11 @@ int main(int argc, char **argv) {
     int print_type_freq = 0;
     int arg_failure = 0;
 
-    const char * OPTIONS = "dfhm:MnurtD:x:s:S";
+    const char * OPTIONS = "cdfhm:MnurtD:x:s:S";
 
     // Setting configuration defaults.
-    u_char TCP_SAVE_STATE = 1;
+    uint8_t TCP_SAVE_STATE = 1;
+    conf.COUNTS = 0;
     conf.EXCLUDES = 0;
     conf.RECORD_SEP = "";
     conf.SEP = '\t';
@@ -59,6 +58,9 @@ int main(int argc, char **argv) {
     c = getopt(argc, argv, OPTIONS);
     while (c != -1) {
         switch (c) {
+            case 'c':
+                conf.COUNTS = 1;
+                break;
             case 'd':
                 conf.AD_ENABLED = 1;
                 break;
@@ -179,6 +181,10 @@ int main(int argc, char **argv) {
         "the supported record types and documentation on the parsers.\n\n"
         "Args:\n"
         "<pcapfile> - The pcapfile to parse. Use a '-' for stdin\n"
+        "-c\n"
+        "   Append a list of counts for each record type (Questions, \n"
+        "   Answers, etc) to record fields. Each type is followed by it's\n"
+        "   record type symbol.\n"
         "-d\n"
         "   Enable the parsing and output of the Additional\n"
         "   Records section. Disabled by default.\n"
@@ -237,7 +243,7 @@ int main(int argc, char **argv) {
  
     // need to check this for overflow.
     read = pcap_dispatch(pcap_file, -1, (pcap_handler)handler, 
-                         (u_char *) &conf);
+                         (uint8_t *) &conf);
     
     if (TCP_SAVE_STATE == 1) {
         tcp_save_state(&conf);
@@ -251,8 +257,8 @@ int main(int argc, char **argv) {
     return 0;
 }
 
-void handler(u_char * args, const struct pcap_pkthdr *orig_header, 
-             const u_char *orig_packet) {
+void handler(uint8_t * args, const struct pcap_pkthdr *orig_header, 
+             const uint8_t *orig_packet) {
     int pos;
     eth_info eth;
     ip_info ip;
@@ -260,7 +266,7 @@ void handler(u_char * args, const struct pcap_pkthdr *orig_header,
 
     // The way we handle IP fragments means we may have to replace
     // the original data and correct the header info, so a const won't work.
-    u_char * packet = (u_char *) orig_packet;
+    uint8_t * packet = (uint8_t *) orig_packet;
     struct pcap_pkthdr header;
     header.ts = orig_header->ts;
     header.caplen = orig_header->caplen;
@@ -308,7 +314,7 @@ void handler(u_char * args, const struct pcap_pkthdr *orig_header,
                 return;
             }
         }
-        pos = dns_parse(pos, &header, packet, &dns, conf);
+        pos = dns_parse(pos, &header, packet, &dns, conf, 0);
         print_summary(&ip, &udp, &dns, &header, conf);
     } else if (ip.proto == 6) {
         // Hand the tcp packet over for later reconstruction.
@@ -329,7 +335,7 @@ void print_summary(ip_info * ip, transport_info * trns, dns_info * dns,
     char date[200];
     char proto;
 
-    bpf_u_int32 dnslength;
+    uint32_t dnslength;
     dns_rr *next;
     dns_question *qnext;
 
@@ -358,6 +364,11 @@ void print_summary(ip_info * ip, transport_info * trns, dns_info * dns,
     printf("%s,%s,", date, iptostr(&ip->src));
     printf("%s,%d,%c,%c,%s", iptostr(&ip->dst),
            dnslength, proto, dns->qr ? 'r':'q', dns->AA?"AA":"NA");
+
+    if (conf->COUNTS) {
+        printf(",%u?,%u!,%u$,%u+", dns->qdcount, dns->ancount, 
+                                   dns->nscount, dns->arcount);
+    }
 
     // Go through the list of queries, and print each one.
     qnext = dns->queries;
@@ -391,8 +402,8 @@ void print_summary(ip_info * ip, transport_info * trns, dns_info * dns,
     fflush(stdout); fflush(stderr);
 }
 
-void print_packet(bpf_u_int32 max_len, u_char *packet,
-                  bpf_u_int32 start, bpf_u_int32 end, u_int wrap) {
+void print_packet(uint32_t max_len, uint8_t *packet,
+                  uint32_t start, uint32_t end, u_int wrap) {
     int i=0;
     while (i < end - start && (i + start) < max_len) {
         printf("%02x ", packet[i+start]);
@@ -418,14 +429,14 @@ void dns_question_free(dns_question * question) {
     free(question);
 }
 
-bpf_u_int32 parse_questions(bpf_u_int32 pos, bpf_u_int32 id_pos, 
-                            struct pcap_pkthdr *header,
-                            u_char *packet, u_short count, 
-                            dns_question ** root) {
-    bpf_u_int32 start_pos = pos; 
+uint32_t parse_questions(uint32_t pos, uint32_t id_pos, 
+                         struct pcap_pkthdr *header,
+                         uint8_t *packet, uint16_t count, 
+                         dns_question ** root) {
+    uint32_t start_pos = pos; 
     dns_question * last = NULL;
     dns_question * current;
-    u_short i;
+    uint16_t i;
     *root = NULL;
 
     for (i=0; i < count; i++) {
@@ -464,16 +475,14 @@ bpf_u_int32 parse_questions(bpf_u_int32 pos, bpf_u_int32 id_pos,
 // Parse an individual resource record, placing the acquired data in 'rr'.
 // 'packet', 'pos', and 'id_pos' serve the same uses as in parse_rr_set.
 // Return 0 on error, the new 'pos' in the packet otherwise.
-bpf_u_int32 parse_rr(bpf_u_int32 pos, bpf_u_int32 id_pos, 
-                     struct pcap_pkthdr *header, 
-                     u_char *packet, dns_rr * rr,
-                     config * conf) {
+uint32_t parse_rr(uint32_t pos, uint32_t id_pos, struct pcap_pkthdr *header, 
+                  uint8_t *packet, dns_rr * rr, config * conf) {
     int i;
-    bpf_u_int32 rr_start = pos;
+    uint32_t rr_start = pos;
     rr_parser_container * parser;
     rr_parser_container opts_cont = {0,0, opts};
 
-    bpf_u_int32 temp_pos; // Only used when parsing SRV records.
+    uint32_t temp_pos; // Only used when parsing SRV records.
     char * temp_data; // Also used only for SRV records.
 
     rr->name = NULL;
@@ -555,13 +564,13 @@ bpf_u_int32 parse_rr(bpf_u_int32 pos, bpf_u_int32 id_pos,
 // compressed names. 'count' is the expected number of records of this type.
 // 'root' is where to assign the parsed list of objects.
 // Return 0 on error, the new 'pos' in the packet otherwise.
-bpf_u_int32 parse_rr_set(bpf_u_int32 pos, bpf_u_int32 id_pos, 
+uint32_t parse_rr_set(uint32_t pos, uint32_t id_pos, 
                          struct pcap_pkthdr *header,
-                         u_char *packet, u_short count, 
+                         uint8_t *packet, uint16_t count, 
                          dns_rr ** root, config * conf) {
     dns_rr * last = NULL;
     dns_rr * current;
-    u_short i;
+    uint16_t i;
     *root = NULL; 
     for (i=0; i < count; i++) {
         // Create and clear the data in a new dns_rr object.
@@ -584,12 +593,12 @@ bpf_u_int32 parse_rr_set(bpf_u_int32 pos, bpf_u_int32 id_pos,
 }
 
 // Generates a hash from the current packet. 
-int dedup(bpf_u_int32 pos, struct pcap_pkthdr *header, u_char * packet,
+int dedup(uint32_t pos, struct pcap_pkthdr *header, uint8_t * packet,
           ip_info * ip, transport_info * trns, config * conf) {
     
     unsigned long long hash = 0;
     unsigned long long mask = 0xffffffffffffffff;
-    bpf_u_int32 i;
+    uint32_t i;
 
     // Put the hash of the src address in the upper 32 bits,
     // and the dest in the lower 32.
@@ -639,13 +648,14 @@ int dedup(bpf_u_int32 pos, struct pcap_pkthdr *header, u_char * packet,
 
 // Parse the dns protocol in 'packet' starting at 'pos'. 
 // The resulting data is placed in the given 'dns' struct.
+// force_full_parse - When true, force parsing of the whole record.
 // Return the new pos: 0 on error.
-bpf_u_int32 dns_parse(bpf_u_int32 pos, struct pcap_pkthdr *header, 
-                      u_char *packet, dns_info * dns,
-                      config * conf) {
+uint32_t dns_parse(uint32_t pos, struct pcap_pkthdr *header, 
+                   uint8_t *packet, dns_info * dns,
+                   config * conf, uint8_t force_full_parse) {
     
     int i;
-    bpf_u_int32 id_pos = pos;
+    uint32_t id_pos = pos;
     dns_rr * last = NULL;
 
     if (header->len - pos < 12) {
@@ -692,11 +702,12 @@ bpf_u_int32 dns_parse(bpf_u_int32 pos, struct pcap_pkthdr *header,
         pos = parse_rr_set(pos, id_pos, header, packet, 
                            dns->ancount, &(dns->answers), conf);
     else dns->answers = NULL;
-    if (pos != 0 && (conf->NS_ENABLED || conf->AD_ENABLED)) {
+    if (pos != 0 && 
+        (conf->NS_ENABLED || conf->AD_ENABLED || force_full_parse)) {
         pos = parse_rr_set(pos, id_pos, header, packet, 
                            dns->nscount, &(dns->name_servers), conf);
     } else dns->name_servers = NULL;
-    if (pos != 0 && conf->AD_ENABLED) {
+    if (pos != 0 && (conf->AD_ENABLED || force_full_parse)) {
         pos = parse_rr_set(pos, id_pos, header, packet, 
                            dns->arcount, &(dns->additional), conf);
     } else dns->additional = NULL;

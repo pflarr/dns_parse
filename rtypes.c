@@ -12,8 +12,8 @@
 //       this from the rest of the parser containers.
 rr_parser_container default_rr_parser = {0, 0, escape, NULL, NULL, 0};
 
-char * mk_error(const char * msg, const u_char * packet, bpf_u_int32 pos,
-                u_short rdlength) {
+char * mk_error(const char * msg, const uint8_t * packet, uint32_t pos,
+                uint16_t rdlength) {
     char * tmp = escape_data(packet, pos, pos+rdlength);
     size_t len = strlen(tmp) + strlen(msg) + 1;
     char * buffer = malloc(sizeof(char)*len);
@@ -24,8 +24,8 @@ char * mk_error(const char * msg, const u_char * packet, bpf_u_int32 pos,
 
 #define A_DOC "A (IPv4 address) format\n"\
 "A records are simply an IPv4 address, and are formatted as such."
-char * A(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 i,
-         u_short rdlength, bpf_u_int32 plen) {
+char * A(const uint8_t * packet, uint32_t pos, uint32_t i,
+         uint16_t rdlength, uint32_t plen) {
     char * data = (char *)malloc(sizeof(char)*16);
 
     if (rdlength != 4) {
@@ -41,8 +41,8 @@ char * A(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 i,
 
 #define D_DOC "domain name like format\n"\
 "A DNS like name. This format is used for many record types."
-char * domain_name(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
-                   u_short rdlength, bpf_u_int32 plen) {
+char * domain_name(const uint8_t * packet, uint32_t pos, uint32_t id_pos,
+                   uint16_t rdlength, uint32_t plen) {
     char * name = read_rr_name(packet, &pos, id_pos, plen);
     if (name == NULL) 
         name = mk_error("Bad DNS name: ", packet, pos, rdlength);
@@ -52,12 +52,12 @@ char * domain_name(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
 
 #define SOA_DOC "Start of Authority format\n"\
 "Presented as a series of labeled SOA fields."
-char * soa(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
-                   u_short rdlength, bpf_u_int32 plen) {
+char * soa(const uint8_t * packet, uint32_t pos, uint32_t id_pos,
+                 uint16_t rdlength, uint32_t plen) {
     char * mname;
     char * rname;
     char * buffer;
-    bpf_u_int32 serial, refresh, retry, expire, minimum;
+    uint32_t serial, refresh, retry, expire, minimum;
     const char * format = "mname: %s, rname: %s, serial: %d, "
                           "refresh: %d, retry: %d, expire: %d, min: %d";
 
@@ -86,13 +86,13 @@ char * soa(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
 
 #define MX_DOC "Mail Exchange record format\n"\
 "A standard dns name preceded by a preference number."
-char * mx(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
-                   u_short rdlength, bpf_u_int32 plen) {
+char * mx(const uint8_t * packet, uint32_t pos, uint32_t id_pos,
+                uint16_t rdlength, uint32_t plen) {
 
-    u_short pref = (packet[pos] << 8) + packet[pos+1];
+    uint16_t pref = (packet[pos] << 8) + packet[pos+1];
     char * name;
     char * buffer;
-    bpf_u_int32 spos = pos;
+    uint32_t spos = pos;
 
     pos = pos + 2;
     name = read_rr_name(packet, &pos, id_pos, plen);
@@ -112,9 +112,9 @@ char * mx(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
 "simply escaped. Note that the associated format function is non-standard,\n"\
 "as EDNS records modify the basic resourse record protocol (there is no \n"\
 "class field, for instance. RFC 2671"
-char * opts(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
-                  u_short rdlength, bpf_u_int32 plen) {
-    u_short payload_size = (packet[pos] << 8) + packet[pos+1];
+char * opts(const uint8_t * packet, uint32_t pos, uint32_t id_pos,
+                  uint16_t rdlength, uint32_t plen) {
+    uint16_t payload_size = (packet[pos] << 8) + packet[pos+1];
     char *buffer;
     const char * base_format = "size:%d,rcode:0x%02x%02x%02x%02x,%s";
     char *rdata = escape_data(packet, pos+6, pos + 6 + rdlength);
@@ -131,11 +131,11 @@ char * opts(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
 "Service records are used to identify various network services and ports.\n"\
 "The format is: 'priority,weight,port target'\n"\
 "The target is a somewhat standard DNS name."
-char * srv(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
-                 u_short rdlength, bpf_u_int32 plen) {
-    u_short priority = (packet[pos] << 8) + packet[pos+1];
-    u_short weight = (packet[pos+2] << 8) + packet[pos+3];
-    u_short port = (packet[pos+4] << 8) + packet[pos+5];
+char * srv(const uint8_t * packet, uint32_t pos, uint32_t id_pos,
+                 uint16_t rdlength, uint32_t plen) {
+    uint16_t priority = (packet[pos] << 8) + packet[pos+1];
+    uint16_t weight = (packet[pos+2] << 8) + packet[pos+3];
+    uint16_t port = (packet[pos+4] << 8) + packet[pos+5];
     char *target, *buffer;
     pos = pos + 6;
     // Don't read beyond the end of the rr.
@@ -151,10 +151,10 @@ char * srv(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
 
 #define AAAA_DOC "IPv6 record format.  RFC 3596\n"\
 "A standard IPv6 address. No attempt is made to abbreviate the address."
-char * AAAA(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
-                  u_short rdlength, bpf_u_int32 plen) {
+char * AAAA(const uint8_t * packet, uint32_t pos, uint32_t id_pos,
+                  uint16_t rdlength, uint32_t plen) {
     char *buffer;
-    u_short ipv6[8];
+    uint16_t ipv6[8];
     int i;
 
     if (rdlength != 16) { 
@@ -174,11 +174,11 @@ char * AAAA(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
 "format: flags, proto, algorithm, key\n"\
 "All fields except the key are printed as decimal numbers.\n"\
 "The key is given in base64. "
-char * dnskey(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
-                    u_short rdlength, bpf_u_int32 plen) {
-    u_short flags = (packet[pos] << 8) + packet[pos+1];
-    u_char proto = packet[pos+2];
-    u_char algorithm = packet[pos+3];
+char * dnskey(const uint8_t * packet, uint32_t pos, uint32_t id_pos,
+                    uint16_t rdlength, uint32_t plen) {
+    uint16_t flags = (packet[pos] << 8) + packet[pos+1];
+    uint8_t proto = packet[pos+2];
+    uint8_t algorithm = packet[pos+3];
     int i;
     char *buffer, *key;
 
@@ -194,14 +194,14 @@ char * dnskey(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
 "All fields except the signer and signature are given as decimal numbers.\n"\
 "The signer is a standard DNS name.\n"\
 "The signature is base64 encoded."
-char * rrsig(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
-                   u_short rdlength, bpf_u_int32 plen) {
-    bpf_u_int32 o_pos = pos;
-    u_short tc = (packet[pos] << 8) + packet[pos+1];
-    u_char alg = packet[pos+2];
-    u_char labels = packet[pos+3];
+char * rrsig(const uint8_t * packet, uint32_t pos, uint32_t id_pos,
+                   uint16_t rdlength, uint32_t plen) {
+    uint32_t o_pos = pos;
+    uint16_t tc = (packet[pos] << 8) + packet[pos+1];
+    uint8_t alg = packet[pos+2];
+    uint8_t labels = packet[pos+3];
     u_int ottl, sig_exp, sig_inc;
-    u_short key_tag = (packet[pos+16] << 8) + packet[pos+17];
+    uint16_t key_tag = (packet[pos+16] << 8) + packet[pos+17];
     char *signer, *signature, *buffer;
     pos = pos + 4;
     ottl = (packet[pos] << 24) + (packet[pos+1] << 16) + 
@@ -234,8 +234,8 @@ char * rrsig(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
 #define NSEC_DOC "NSEC format.  RFC 4034\n"\
 "Format: domain bitmap\n"\
 "domain is a DNS name, bitmap is hex escaped."
-char * nsec(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
-                  u_short rdlength, bpf_u_int32 plen) {
+char * nsec(const uint8_t * packet, uint32_t pos, uint32_t id_pos,
+                  uint16_t rdlength, uint32_t plen) {
 
     char *buffer, *domain, *bitmap;
 
@@ -256,10 +256,10 @@ char * nsec(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,
 "format: key_tag,algorithm,digest_type,digest\n"\
 "The keytag, algorithm, and digest type are given as base 10.\n"\
 "The digest is base64 encoded."
-char * ds(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,                     u_short rdlength, bpf_u_int32 plen) {
-    u_short key_tag = (packet[pos] << 8) + packet[pos+1];
-    u_char alg = packet[pos+2];
-    u_char dig_type = packet[pos+3];
+char * ds(const uint8_t * packet, uint32_t pos, uint32_t id_pos,                          uint16_t rdlength, uint32_t plen) {
+    uint16_t key_tag = (packet[pos] << 8) + packet[pos+1];
+    uint8_t alg = packet[pos+2];
+    uint8_t dig_type = packet[pos+3];
     char * digest = b64encode(packet,pos+4,rdlength-4);
     char * buffer;
 
@@ -271,8 +271,8 @@ char * ds(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 id_pos,           
 
 #define NULL_DOC "This data is simply hex escaped. \n"\
 "Non printable characters are given as a hex value (\\x30), for example."
-char * escape(const u_char * packet, bpf_u_int32 pos, bpf_u_int32 i,
-                     u_short rdlength, bpf_u_int32 plen) {
+char * escape(const uint8_t * packet, uint32_t pos, uint32_t i,
+              uint16_t rdlength, uint32_t plen) {
     return escape_data(packet, pos, pos + rdlength);
 }
 
@@ -328,7 +328,7 @@ void sort_parsers() {
 unsigned int PACKETS_SEEN = 0;
 #define REORDER_LIMIT 100000
 // Find the parser that corresponds to the given cls and rtype.
-rr_parser_container * find_parser(u_short cls, u_short rtype) {
+rr_parser_container * find_parser(uint16_t cls, uint16_t rtype) {
 
     unsigned int i=0, pcount = count_parsers();
     rr_parser_container * found = NULL;
