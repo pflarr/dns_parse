@@ -57,6 +57,7 @@ typedef struct {
     
 } config;
 
+// Holds the information for a dns question.
 typedef struct dns_question {
     char * name;
     uint16_t type;
@@ -64,6 +65,7 @@ typedef struct dns_question {
     struct dns_question * next;
 } dns_question;
 
+// Holds the information for a dns resource record.
 typedef struct dns_rr {
     char * name;
     uint16_t type;
@@ -76,6 +78,7 @@ typedef struct dns_rr {
     struct dns_rr * next;
 } dns_rr;
 
+// Holds general DNS information.
 typedef struct {
     uint16_t id;
     char qr;
@@ -93,12 +96,31 @@ typedef struct {
     dns_rr * additional;
 } dns_info;
 
-
+// Including these earlier leads to all sorts of circular dependencies.
 #include "tcp.h"
 #include "network.h"
 
-uint32_t dns_parse(uint32_t, struct pcap_pkthdr *, uint8_t *, 
-                   dns_info *, config *, uint8_t);
-void print_summary(ip_info *, transport_info *, dns_info *,
-                   struct pcap_pkthdr *, config *);
+// Parse DNS from from the given 'packet' byte array starting at offset 'pos', 
+// with libpcap header information in 'header'. 
+// The parsed information is put in the 'dns' struct, and the 
+// new pos in the packet is returned. (0 on error).
+// The config struct gives needed configuration options.
+// force_full_parse - Force fully parsing the dns data, even if 
+//   configuration parameters mean it isn't necessary. If this is false,
+//   the returned position may not correspond with the end of the DNS data. 
+uint32_t dns_parse(uint32_t pos, struct pcap_pkthdr *header, 
+                   uint8_t *packet, dns_info * dns,
+                   config * conf, uint8_t force_full_parse);
+// Print the information in the given packet information objects according
+// to the settings in the configuration struct.
+void print_summary(ip_info * ip, transport_info * trns, dns_info * dns,
+                   struct pcap_pkthdr * header, config * conf);
+// Print packet bytes in hex.
+// max_len - Maximum packet offset.
+// packet - pointer to the packet data.
+// start - start offset
+// end - end offset (if farther than max_len, printing stops at max_len).
+// wrap - How many bytes to print per line.
+void print_packet(uint32_t max_len, uint8_t *packet,
+                  uint32_t start, uint32_t end, u_int wrap);
 #endif

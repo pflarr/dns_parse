@@ -6,6 +6,8 @@
 #include "strutils.h"
 #include "tcp.h"
 
+// Perform TCP checksum on the given packet. 
+// This handles both IPv6 and IPv4 based TCP.
 uint16_t tcp_checksum(ip_info *ip, uint8_t *packet, 
                      uint32_t pos, struct pcap_pkthdr *header) {
     unsigned int sum = 0;
@@ -26,6 +28,7 @@ uint16_t tcp_checksum(ip_info *ip, uint8_t *packet,
         sum += ip->proto;
         sum += ip->length;
     } else {
+        // IPv6 psuedo header construction.
         uint16_t * src_v6 = ip->src.addr.v6.s6_addr16;
         uint16_t * dst_v6 = ip->dst.addr.v6.s6_addr16;
         for (i=0; i<8; i++) {
@@ -73,7 +76,8 @@ uint16_t tcp_checksum(ip_info *ip, uint8_t *packet,
     ((long long) (old).tv_sec*__USEC_RES + (old).tv_usec)) > \
       TCP_EXPIRE_USECS
 
-// Parse the tcp data, and put it in our lists to be reassembled later.
+// Parse the tcp data, and put it in our lists of streams to be reassembled 
+// later.
 void tcp_parse(uint32_t pos, struct pcap_pkthdr *header, 
                uint8_t *packet, ip_info *ip, config * conf) {
     // This packet.
@@ -89,7 +93,8 @@ void tcp_parse(uint32_t pos, struct pcap_pkthdr *header,
     uint16_t actual_checksum;
    
     tcp = malloc(sizeof(tcp_info));
-
+    
+    // Get basic TCP header information.
     tcp->next_sess = NULL;
     tcp->next_pkt = NULL;
     tcp->prev_pkt = NULL;
@@ -129,7 +134,8 @@ void tcp_parse(uint32_t pos, struct pcap_pkthdr *header,
     } else if (checksum == 0x0000 && tcp->rst) {
         // Ignore, since it's a reset packet.
     }
-    
+   
+    // Only allocated space for the TCP data if there is any.
     if (tcp->len > 0) {
         tcp->data = malloc(sizeof(char) * (tcp->len));
         memcpy(tcp->data, packet + pos + (offset*4), tcp->len);
@@ -145,7 +151,7 @@ void tcp_parse(uint32_t pos, struct pcap_pkthdr *header,
     // Keep in mind 'next' is a pointer to the pointer to the next item.
     // Find a matching session, if we have one. 
     // We treat sessions as 1-way communications. The other direction
-    // is handled completely separately.
+    // is handled as a separate stream.
     next = &(conf->tcp_sessions_head);
     while (*next != NULL) {
         DBG(printf("Checking: ");)
@@ -179,6 +185,7 @@ void tcp_parse(uint32_t pos, struct pcap_pkthdr *header,
             // We found our session, we're done.
             break;
         } 
+        // It doesn't belong to this session, move on to the next.
         next = &(*next)->next_sess;
     }
 
@@ -188,16 +195,6 @@ void tcp_parse(uint32_t pos, struct pcap_pkthdr *header,
         tcp->next_sess = conf->tcp_sessions_head;
         conf->tcp_sessions_head = tcp; 
     }
-
-    tcp_info * c_next = conf->tcp_sessions_head;
-    uint32_t sess_total = 0;
-    while (c_next != NULL) {
-        DBG(printf("Sessions[%d] - %p: ", sess_total, c_next);)
-        DBG(tcp_print(c_next);)
-        sess_total++;
-        c_next = c_next->next_sess;
-    }
-    DBG(printf("Current sessions in chain: %d\n", sess_total);)
 
     return;
 }
@@ -310,7 +307,8 @@ void tcp_expire(config * conf, const struct timeval * now ) {
             transport_info trns;
             struct pcap_pkthdr header;
             uint32_t pos;
-
+            
+            // Create a fake packet header, transport and IP structs.
             header.ts = head->ts;
             header.caplen = head->len;
             header.len = head->len;
@@ -322,8 +320,12 @@ void tcp_expire(config * conf, const struct timeval * now ) {
             ip.dst = head->dst;
             ip.proto = 0x06;
             DBG(printf("Parsing DNS (TCP).\n");)
+            // Parse the DNS data from the point after the prepended len.
+            // We must parse the whole packet, otherwise we get off in our
+            // stream, so we set the parse_all flag.
             pos = dns_parse(offset + 2, &header, head->data, &dns, conf, 1);
             if (pos != 0) {
+                // Print the data if there wasn't an error.
                 print_summary(&ip, &trns, &dns, &header, conf);
             }
         
@@ -332,10 +334,9 @@ void tcp_expire(config * conf, const struct timeval * now ) {
                 // continuing for this session.
                 fprintf(stderr, "Mismatched TCP lengths: %u, %llu.\n",
                         pos, (offset + 2 + dns_len));
-                fprintf(stderr, "h->len %u\n", head->len);
-                print_packet(head->len, head->data, pos, head->len, 8);
                 break;
             }
+            // Move on to the next DNS header in the stream.
             offset += 2 + dns_len;
             if (offset + 1 < head->len) {
                 // We don't want to try to parse the length if we're past
@@ -344,6 +345,7 @@ void tcp_expire(config * conf, const struct timeval * now ) {
             }
         }
 
+        // Free this TCP stream and it's data.
         tcp_info * tmp;
         tmp = head;
         head = head->next_sess;
@@ -554,6 +556,15 @@ tcp_info * tcp_assemble(tcp_info * base) {
     return origin;
 }
 
+// Save all unresolved sessions to disk. The path to the save file can be
+// set with the -s option at runtime. 
+// File format:
+// Each tcp_info object and it's data are saved in turn, starting with
+// conf->tcp_sessions_head. All the packets of each session are saved
+// before moving to the next session.
+// When saving a session, the tcp_info object has all it's pointers
+// set to NULL. The prev_pkt pointer will be 1 if there is another
+// packet in the session after this one. 
 void tcp_save_state(config * conf) {
     FILE * outfile = fopen(conf->TCP_STATE_PATH,"w");
     tcp_info * next = conf->tcp_sessions_head;
@@ -598,6 +609,7 @@ void tcp_save_state(config * conf) {
     fclose(outfile);
 }
 
+// Look for a saved TCP state data file, and try to load the data from it.
 tcp_info * tcp_load_state(config * conf) {
     FILE * infile;
     struct stat i_stat;
@@ -660,6 +672,7 @@ tcp_info * tcp_load_state(config * conf) {
     return first_sess;
 }
 
+// Print a tcp_info object. For debugging.
 void tcp_print(tcp_info * tcp) {
     if (tcp == NULL) {
         printf("NULL tcp object\n");

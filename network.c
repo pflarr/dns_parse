@@ -4,6 +4,7 @@
 #include <string.h>
 #include "network.h"
 
+// Parse the ethernet headers, and return the payload position (0 on error).
 uint32_t eth_parse(struct pcap_pkthdr *header, uint8_t *packet,
                    eth_info * eth) {
     uint32_t pos = 0;
@@ -83,6 +84,9 @@ uint32_t mpls_parse(uint32_t pos, struct pcap_pkthdr *header,
     return pos;
 }
 
+// Parse the IPv4 header. May point p_packet to a new packet data array,
+// which means zero is a valid return value. Sets p_packet to NULL on error.
+// See RFC791
 uint32_t ipv4_parse(uint32_t pos, struct pcap_pkthdr *header, 
                     uint8_t ** p_packet, ip_info * ip, config * conf) {
 
@@ -159,6 +163,9 @@ uint32_t ipv4_parse(uint32_t pos, struct pcap_pkthdr *header,
 
 }
 
+// Parse the IPv6 header. May point p_packet to a new packet data array,
+// which means zero is a valid return value. Sets p_packet to NULL on error.
+// See RFC2460
 uint32_t ipv6_parse(uint32_t pos, struct pcap_pkthdr *header,
                     uint8_t ** p_packet, ip_info * ip, config * conf) {
 

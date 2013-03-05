@@ -20,8 +20,6 @@ void dns_rr_free(dns_rr *);
 void dns_question_free(dns_question *);
 uint32_t parse_rr(uint32_t, uint32_t, struct pcap_pkthdr *, 
                   uint8_t *, dns_rr *, config *);
-void print_summary(ip_info *, transport_info *, dns_info *,
-                   struct pcap_pkthdr *, config *);
 void print_rr_section(dns_rr *, char *, config *);
 void print_packet(uint32_t, uint8_t *, uint32_t, uint32_t, u_int);
 int dedup(uint32_t, struct pcap_pkthdr *, uint8_t *,
@@ -324,12 +322,17 @@ void handler(uint8_t * args, const struct pcap_pkthdr *orig_header,
         return;
     }
    
+    if (packet != orig_packet) {
+        // Free data from artificially constructed packets.
+        free(packet);
+    }
+
     // Expire tcp sessions, and output them if possible.
     DBG(printf("Expiring TCP.\n");)
     tcp_expire(conf, &header.ts);
 }
 
-// Parse and output a packet's DNS data.
+// Output the DNS data.
 void print_summary(ip_info * ip, transport_info * trns, dns_info * dns,
                    struct pcap_pkthdr * header, config * conf) {
     char date[200];
@@ -402,6 +405,41 @@ void print_summary(ip_info * ip, transport_info * trns, dns_info * dns,
     fflush(stdout); fflush(stderr);
 }
 
+// Print all resource records in the given section.
+void print_rr_section(dns_rr * next, char * name, config * conf) {
+    int skip;
+    int i;
+    while (next != NULL) {
+        // Print the rr seperator and rr section name.
+        printf("%c%s", conf->SEP, name);
+        skip = 0;
+        // Search the excludes list to see if we should not print this
+        // rtype.
+        for (i=0; i < conf->EXCLUDES && skip == 0; i++) 
+            if (next->type == conf->EXCLUDED[i]) skip = 1;
+        if (!skip) {
+            char *name, *data;
+            name = (next->name == NULL) ? "*empty*" : next->name;
+            data = (next->data == NULL) ? "*empty*" : next->data;
+            if (conf->PRINT_RR_NAME) { 
+                if (next->rr_name == NULL) 
+                    // Handle bad records.
+                    printf(" %s UNKNOWN(%d,%d) %s", name, next->type, 
+                                                    next->cls, data);
+                else
+                    // Print the string rtype name with the rest of the record.
+                    printf(" %s %s %s", name, next->rr_name, data);
+            } else
+                // The -r option case. 
+                // Print the rtype and class number with the record.
+                printf(" %s %d %d %s", name, next->type, next->cls, data);
+        }
+        next = next->next; 
+    }
+}
+
+// Print packet bytes in hex.
+// See dns_parse.h
 void print_packet(uint32_t max_len, uint8_t *packet,
                   uint32_t start, uint32_t end, u_int wrap) {
     int i=0;
@@ -414,6 +452,7 @@ void print_packet(uint32_t max_len, uint8_t *packet,
     return;
 }
 
+// Free a dns_rr struct.
 void dns_rr_free(dns_rr * rr) {
     if (rr == NULL) return;
     if (rr->name != NULL) free(rr->name);
@@ -422,6 +461,7 @@ void dns_rr_free(dns_rr * rr) {
     free(rr);
 }
 
+// Free a dns_question struct.
 void dns_question_free(dns_question * question) {
     if (question == NULL) return;
     if (question->name != NULL) free(question->name);
@@ -429,6 +469,12 @@ void dns_question_free(dns_question * question) {
     free(question);
 }
 
+// Parse the questions section of the dns protocol.
+// pos - offset to the start of the questions section.
+// id_pos - offset set to the id field. Needed to decompress dns data.
+// packet, header - the packet location and header data.
+// count - Number of question records to expect.
+// root - Pointer to where to store the question records.
 uint32_t parse_questions(uint32_t pos, uint32_t id_pos, 
                          struct pcap_pkthdr *header,
                          uint8_t *packet, uint16_t count, 
@@ -445,6 +491,7 @@ uint32_t parse_questions(uint32_t pos, uint32_t id_pos,
 
         current->name = read_rr_name(packet, &pos, id_pos, header->len);
         if (current->name == NULL || (pos + 2) >= header->len) {
+            // Handle a bad DNS name.
             fprintf(stderr, "DNS question error\n");
             char * buffer = escape_data(packet, start_pos, header->len);
             const char * msg = "Bad DNS question: ";
@@ -459,7 +506,8 @@ uint32_t parse_questions(uint32_t pos, uint32_t id_pos,
         }
         current->type = (packet[pos] << 8) + packet[pos+1];
         current->cls = (packet[pos+2] << 8) + packet[pos+3];
-
+        
+        // Add this question object to the list.
         if (last == NULL) *root = current;
         else last->next = current;
         last = current;
@@ -646,10 +694,9 @@ int dedup(uint32_t pos, struct pcap_pkthdr *header, uint8_t * packet,
     return 0;
 }
 
-// Parse the dns protocol in 'packet' starting at 'pos'. 
-// The resulting data is placed in the given 'dns' struct.
-// force_full_parse - When true, force parsing of the whole record.
-// Return the new pos: 0 on error.
+// Parse the dns protocol in 'packet'. 
+// See RFC1035
+// See dns_parse.h for more info.
 uint32_t dns_parse(uint32_t pos, struct pcap_pkthdr *header, 
                    uint8_t *packet, dns_info * dns,
                    config * conf, uint8_t force_full_parse) {
@@ -680,6 +727,7 @@ uint32_t dns_parse(uint32_t pos, struct pcap_pkthdr *header,
         return pos + 12;
     }
 
+    // Counts for each of the record types.
     dns->qdcount = (packet[pos+4] << 8) + packet[pos+5];
     dns->ancount = (packet[pos+6] << 8) + packet[pos+7];
     dns->nscount = (packet[pos+8] << 8) + packet[pos+9];
@@ -696,6 +744,7 @@ uint32_t dns_parse(uint32_t pos, struct pcap_pkthdr *header,
                dns->qdcount, dns->ancount, dns->nscount, dns->arcount);
     )
 
+    // Parse each type of records in turn.
     pos = parse_questions(pos+12, id_pos, header, packet, 
                           dns->qdcount, &(dns->queries));
     if (pos != 0) 
@@ -712,30 +761,4 @@ uint32_t dns_parse(uint32_t pos, struct pcap_pkthdr *header,
                            dns->arcount, &(dns->additional), conf);
     } else dns->additional = NULL;
     return pos;
-}
-
-// Print all resource records in the given section.
-void print_rr_section(dns_rr * next, char * name, config * conf) {
-    int skip;
-    int i;
-    while (next != NULL) {
-        printf("%c%s", conf->SEP, name);
-        skip = 0;
-        for (i=0; i < conf->EXCLUDES && skip == 0; i++) 
-            if (next->type == conf->EXCLUDED[i]) skip = 1;
-        if (!skip) {
-            char *name, *data;
-            name = (next->name == NULL) ? "*empty*" : next->name;
-            data = (next->data == NULL) ? "*empty*" : next->data;
-            if (conf->PRINT_RR_NAME) { 
-                if (next->rr_name == NULL) 
-                    printf(" %s UNKNOWN(%d,%d) %s", name, next->type, 
-                                                    next->cls, data);
-                else
-                    printf(" %s %s %s", name, next->rr_name, data);
-            } else
-                printf(" %s %d %d %s", name, next->type, next->cls, data);
-        }
-        next = next->next; 
-    }
 }

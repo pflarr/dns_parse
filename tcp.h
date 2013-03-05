@@ -6,6 +6,9 @@
 #ifndef __DP_TCP
 #define __DP_TCP
 
+// TCP header information. Also contains pointers used to connect to this
+// to other TCP streams, and to connect this packet to other packets in
+// it's stream.
 typedef struct tcp_info {
     struct timeval ts;
     ip_addr src;
@@ -31,12 +34,24 @@ typedef struct tcp_info {
     struct tcp_info * prev_pkt;
 } tcp_info;
 
-tcp_info * tcp_assemble(tcp_info *);
+// Print the TCP header information. Used for debugging.
 void tcp_print(tcp_info *);
+// Save all the current unresolved TCP streams to file.
 void tcp_save_state(config *);
+// Load TCP streams saved by tcp_save_state.
 tcp_info * tcp_load_state(config *);
+// Parse a TCP packet, and attach the data to a TCP stream.
 void tcp_parse(uint32_t, struct pcap_pkthdr *, uint8_t *, ip_info *, 
                config *);
+// Assemble the TCP packets in the list with it's head at the given
+// tcp_info struct.
+tcp_info * tcp_assemble(tcp_info *);
+// Expire TCP streams based on the given timeval and the compile time defined
+// expiration time limit. The age of a stream is based on the last packet 
+// it received. A timeval of NULL will expire all streams.
+// Expired streams are put through tcp reassembly.
+// Each reassembled stream is then put through dns parsing.
+// Parsed DNS data is then output.
 void tcp_expire(config *, const struct timeval *);
 
 #endif
