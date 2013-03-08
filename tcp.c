@@ -283,6 +283,8 @@ void tcp_expire(config * conf, const struct timeval * now ) {
         if (offset_found == 0) {
             if   (head->len > 2 && 
                   TCP_DNS_LEN(head->data, 0) < head->len &&
+                  // We should have more data than fits in a DNS header.
+                  // (12 bytes).
                   TCP_DNS_LEN(head->data, 0) > 12 ) {
                 offset = 0;
             } else { 
@@ -323,7 +325,7 @@ void tcp_expire(config * conf, const struct timeval * now ) {
             // Parse the DNS data from the point after the prepended len.
             // We must parse the whole packet, otherwise we get off in our
             // stream, so we set the parse_all flag.
-            pos = dns_parse(offset + 2, &header, head->data, &dns, conf, 1);
+            pos = dns_parse(offset+2, &header, head->data, &dns, conf, FORCE);
             if (pos != 0) {
                 // Print the data if there wasn't an error.
                 print_summary(&ip, &trns, &dns, &header, conf);
@@ -392,12 +394,8 @@ tcp_info * tcp_assemble(tcp_info * base) {
         base = *curr;
     }
     DBG(printf("Making the data_chain vars.\n");)
-    data_chain = malloc(sizeof(char *) * dc_i);
-    data_lengths = malloc(sizeof(uint32_t) * dc_i);
-    for (i=0; i<dc_i; i++) {
-        data_chain[i] = NULL;
-        data_lengths[i] = 0;
-    }
+    data_chain = calloc(dc_i, sizeof(char *));
+    data_lengths = calloc(dc_i, sizeof(uint32_t));
 
     // Find the first syn packet
     curr = &base;
@@ -423,8 +421,6 @@ tcp_info * tcp_assemble(tcp_info * base) {
 
     // Gather all the bits of data, in order. 
     // The chain is destroyed bit by bit, except for the last tcp object.
-    // The packets should be in order, or close to it, making this approx. 
-    // O(n). In the random order case, it's O(n^2).
     // Skip all this if the origin is NULL, since we don't have a starting
     // point anyway.
     dc_i = 0;
@@ -513,9 +509,9 @@ tcp_info * tcp_assemble(tcp_info * base) {
     DBG(printf("Total_length: %lld\n", total_length);)
 
     // Make the final data struct.
-    //XXX This could be seriously freaking huge. We'll ignore that for now.
-    //XXX It should be fine, in theory, thanks to virtual memory and big disks,
-    //XXX but it's good this is only DNS data, right?
+    // This could be seriously freaking huge. We'll ignore that for now.
+    // It should be fine, in theory, thanks to virtual memory and big disks,
+    // but it's good this is only DNS data, right?
     // Combine the data.
     // We'll skip combining the data, and just free the chain, if there 
     // isn't any data to deal with.

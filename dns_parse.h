@@ -100,17 +100,19 @@ typedef struct {
 #include "tcp.h"
 #include "network.h"
 
+#define FORCE 1
+
 // Parse DNS from from the given 'packet' byte array starting at offset 'pos', 
 // with libpcap header information in 'header'. 
 // The parsed information is put in the 'dns' struct, and the 
 // new pos in the packet is returned. (0 on error).
 // The config struct gives needed configuration options.
-// force_full_parse - Force fully parsing the dns data, even if 
+// force - Force fully parsing the dns data, even if 
 //   configuration parameters mean it isn't necessary. If this is false,
 //   the returned position may not correspond with the end of the DNS data. 
 uint32_t dns_parse(uint32_t pos, struct pcap_pkthdr *header, 
                    uint8_t *packet, dns_info * dns,
-                   config * conf, uint8_t force_full_parse);
+                   config * conf, uint8_t force);
 // Print the information in the given packet information objects according
 // to the settings in the configuration struct.
 void print_summary(ip_info * ip, transport_info * trns, dns_info * dns,

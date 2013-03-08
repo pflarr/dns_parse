@@ -208,7 +208,7 @@ uint32_t ipv6_parse(uint32_t pos, struct pcap_pkthdr *header,
             case IPPROTO_HOPOPTS:
             case IPPROTO_DSTOPTS:
             case IPPROTO_ROUTING:
-                if (header->len < (pos + 40)) {
+                if (header->len < (pos + 16)) {
                     fprintf(stderr, "Truncated Packet(ipv6)\n");
                     p_packet = NULL; return 0;
                 }
@@ -252,6 +252,7 @@ uint32_t ipv6_parse(uint32_t pos, struct pcap_pkthdr *header,
                 // IP fragment.
                 next_hdr = packet[pos];
                 frag = malloc(sizeof(ip_fragment));
+                // Get the offset of the data for this fragment.
                 frag->start = (packet[pos+2] << 8) + (packet[pos+3] & 0xf4);
                 frag->islast = packet[pos+3] & 0x01;
                 // We don't try to deal with endianness here, since it 
@@ -261,9 +262,14 @@ uint32_t ipv6_parse(uint32_t pos, struct pcap_pkthdr *header,
                 header_len += 8;
                 pos += 8;
                 break;
+            case TCP:
+            case UDP:
+                done = 1; 
+                break;
             default:
-                // All non ipv6 extension protocols
-                done = 1;
+                fprintf(stderr, "Unsupported IPv6 proto(%u).\n", next_hdr);
+                p_packet = NULL; return 0;
+                
         }
     }
 
@@ -325,12 +331,10 @@ ip_fragment * ip_frag_add(ip_fragment * this, config * conf) {
     // At this point curr will be the head of our matched chain of fragments, 
     // and found will be the same. We'll use found as our pointer into this
     // chain, and curr to remember where it starts.
-    if (found == NULL) {
-        found = curr;
-    }
+    // 'found' could also be NULL, meaning no match was found.
 
     // If there wasn't a matching list, then we're done.
-    if (*found == NULL) {
+    if (found == NULL) {
         DBG(printf("No matching fragments.\n");)
         this->next = conf->ip_fragment_head;
         conf->ip_fragment_head = this;
@@ -357,7 +361,7 @@ ip_fragment * ip_frag_add(ip_fragment * this, config * conf) {
             break;
         }
         DBG(printf("What: %p\n", *found);)
-        found = &((*found)->next);
+        found = &((*found)->child);
     }
     DBG(printf("What: %p\n", *found);)
 
@@ -385,8 +389,12 @@ ip_fragment * ip_frag_add(ip_fragment * this, config * conf) {
             (*found)->end = (*found)->end + child_len;
             (*found)->islast = child->islast;
             (*found)->child = child->child;
+            // Free the old data and the child, and make the combined buffer
+            // the new data for the merged fragment.
+            free((*found)->data);
             free(child->data);
             free(child);
+            (*found)->data = buff;
         } else {
             found = &(*found)->child;
         }

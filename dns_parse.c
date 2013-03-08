@@ -237,7 +237,7 @@ int main(int argc, char **argv) {
         tcp_load_state(&conf);
     }
 
-    conf.dedup_hashes = calloc(conf.DEDUPS, sizeof(unsigned long long));
+    conf.dedup_hashes = calloc(conf.DEDUPS, sizeof(uint64_t));
  
     // need to check this for overflow.
     read = pcap_dispatch(pcap_file, -1, (pcap_handler)handler, 
@@ -271,8 +271,8 @@ void handler(uint8_t * args, const struct pcap_pkthdr *orig_header,
     header.len = orig_header->len;
     
     VERBOSE(printf("\nPacket %llu.%llu\n", 
-                   (unsigned long long)header.ts.tv_sec, 
-                   (unsigned long long)header.ts.tv_usec);)
+                   (uint64_t)header.ts.tv_sec, 
+                   (uint64_t)header.ts.tv_usec);)
     
     // Parse the ethernet frame. Errors are typically handled in the parser
     // functions. The functions generally return 0 on error.
@@ -312,7 +312,7 @@ void handler(uint8_t * args, const struct pcap_pkthdr *orig_header,
                 return;
             }
         }
-        pos = dns_parse(pos, &header, packet, &dns, conf, 0);
+        pos = dns_parse(pos, &header, packet, &dns, conf, !FORCE);
         print_summary(&ip, &udp, &dns, &header, conf);
     } else if (ip.proto == 6) {
         // Hand the tcp packet over for later reconstruction.
@@ -643,27 +643,27 @@ uint32_t parse_rr_set(uint32_t pos, uint32_t id_pos,
 // Generates a hash from the current packet. 
 int dedup(uint32_t pos, struct pcap_pkthdr *header, uint8_t * packet,
           ip_info * ip, transport_info * trns, config * conf) {
-    
-    unsigned long long hash = 0;
-    unsigned long long mask = 0xffffffffffffffff;
+   
+    uint64_t hash = 0;
+    uint64_t mask = 0xffffffffffffffff;
     uint32_t i;
 
     // Put the hash of the src address in the upper 32 bits,
     // and the dest in the lower 32.
     if (ip->src.vers == IPv4) {
-        hash += ((unsigned long long)ip->src.addr.v4.s_addr << 32);
+        hash += ((uint64_t)ip->src.addr.v4.s_addr << 32);
         hash += ip->dst.addr.v4.s_addr;
     } else {
         for (i=0; i<4; i++) {
-            hash += (unsigned long long)ip->src.addr.v6.s6_addr32[i] << 32;
+            hash += (uint64_t)ip->src.addr.v6.s6_addr32[i] << 32;
             hash += ip->dst.addr.v6.s6_addr32[i];
         }
     }
-    hash += ((unsigned long long)trns->srcport << 32) + trns->dstport;
+    hash += ((uint64_t)trns->srcport << 32) + trns->dstport;
     
     // Add in the payload.
     for (; pos + 8 < header->len; pos+=8) {
-        hash += *(unsigned long long*)(packet + pos);
+        hash += *(uint64_t*)(packet + pos);
     }   
     // Add in those last bytes, if any. 
     // Where doesn't matter, as long as we're consistent.
@@ -699,7 +699,7 @@ int dedup(uint32_t pos, struct pcap_pkthdr *header, uint8_t * packet,
 // See dns_parse.h for more info.
 uint32_t dns_parse(uint32_t pos, struct pcap_pkthdr *header, 
                    uint8_t *packet, dns_info * dns,
-                   config * conf, uint8_t force_full_parse) {
+                   config * conf, uint8_t force) {
     
     int i;
     uint32_t id_pos = pos;
@@ -752,11 +752,11 @@ uint32_t dns_parse(uint32_t pos, struct pcap_pkthdr *header,
                            dns->ancount, &(dns->answers), conf);
     else dns->answers = NULL;
     if (pos != 0 && 
-        (conf->NS_ENABLED || conf->AD_ENABLED || force_full_parse)) {
+        (conf->NS_ENABLED || conf->AD_ENABLED || force)) {
         pos = parse_rr_set(pos, id_pos, header, packet, 
                            dns->nscount, &(dns->name_servers), conf);
     } else dns->name_servers = NULL;
-    if (pos != 0 && (conf->AD_ENABLED || force_full_parse)) {
+    if (pos != 0 && (conf->AD_ENABLED || force)) {
         pos = parse_rr_set(pos, id_pos, header, packet, 
                            dns->arcount, &(dns->additional), conf);
     } else dns->additional = NULL;
