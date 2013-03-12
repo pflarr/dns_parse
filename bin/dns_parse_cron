@@ -18,7 +18,7 @@ from syslog import LOG_KERN, LOG_USER, LOG_DAEMON, LOG_LOCAL0, LOG_LOCAL1,\
 
 CFG_PATH = '/etc/dns_parse.cfg'
 CFG_OPTIONS = ['PCAP_DIR', 'NETWORKS', 'STATE_DIR', 'OPTIONS', 
-               'LOG_FILE', 'ERROR_LOG_FACILITY']
+               'LOG_FILE', 'ERROR_LOG_FACILITY', 'MOVE_DIR']
 parser = SafeConfigParser()
 parser.read(CFG_PATH)
 
@@ -97,6 +97,15 @@ for network in options['NETWORKS'].split():
             if ret != 0:
                 syslog.syslog(syslog.LOG_ERR, "Error processing file '%s'. "
                                               "Cmd: %s" % (path, cmd))
+
+            if (options['MOVE_DIR']):
+                new_path = os.path.join(options['MOVE_DIR'], files[i])
+                try:
+                    os.rename(path, new_path)
+                except Exception, msg:
+                    syslog.syslog(syslog.LOG_ERR, 
+                                  "Error moving pcap file: %s" % msg)
+                                        
             try:
                 if os.path.exists(errtmp):
                     errtmp_file = open(errtmp)
@@ -106,6 +115,7 @@ for network in options['NETWORKS'].split():
             except Exception, msg:
                 syslog.syslog(syslog.LOG_ERR, 
                              "Error handling error file: %s" % msg)
+
     
             i = i - 1
 
