@@ -99,7 +99,8 @@ for network in options['NETWORKS'].split():
                                               "Cmd: %s" % (path, cmd))
 
             if (options['MOVE_DIR']):
-                new_path = os.path.join(options['MOVE_DIR'], files[i])
+                new_path = os.path.join(options['MOVE_DIR'], 
+                                        files[i].split('/')[-1])
                 try:
                     os.rename(path, new_path)
                 except Exception, msg:
