@@ -217,7 +217,7 @@ int main(int argc, char **argv) {
         "-S \n"
         "   Disable TCP state saving/loading.\n"
         "-t \n"
-        "   Print the time/date as in Y/M/D H:M:S format.\n"
+        "   Print the time/date as in Y-m-d H:M:S (ISO 8601) format.\n"
         "   The time will be in the local timezone.\n"
         "-u \n"
         "   Print a record of the how many occurances of each class,type\n"
@@ -346,7 +346,7 @@ void print_summary(ip_info * ip, transport_info * trns, dns_info * dns,
     if (conf->PRETTY_DATE) {
         struct tm *time;
         size_t result;
-        const char * format = "%D %T";
+        const char * format = "%F %T";
         time = localtime(&(header->ts.tv_sec));
         result = strftime(date, 200, format, time);
         if (result == 0) strncpy(date, "Date format error", 20);
