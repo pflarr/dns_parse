@@ -346,10 +346,12 @@ void print_summary(ip_info * ip, transport_info * trns, dns_info * dns,
     if (conf->PRETTY_DATE) {
         struct tm *time;
         size_t result;
+        char t_date[200];
         const char * format = "%F %T";
         time = localtime(&(header->ts.tv_sec));
-        result = strftime(date, 200, format, time);
+        result = strftime(t_date, 200, format, time);
         if (result == 0) strncpy(date, "Date format error", 20);
+        sprintf(date, "%s.%06d", t_date, (int)header->ts.tv_usec);
     } else 
         sprintf(date, "%d.%06d", (int)header->ts.tv_sec, 
                                  (int)header->ts.tv_usec);
