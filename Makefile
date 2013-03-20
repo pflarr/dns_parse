@@ -15,7 +15,7 @@ tar: clean
 		false;\
 	fi;
 	mkdir dns_parse-${version}
-	cp -r *.c *.h bin etc init Makefile dns_parse-${version}/
+	cp -r README LICENSE Makefile *.c *.h etc bin init Makefile dns_parse-${version}/
 	tar -czf dns_parse-${version}.tar.gz dns_parse-${version}
 	rm -rf dns_parse-${version}
 
