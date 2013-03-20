@@ -1,4 +1,3 @@
-//#include <arpa/inet.h>
 #include <getopt.h>
 #include <pcap.h>
 #include <stdio.h>
@@ -12,7 +11,7 @@
 #include "strutils.h"
 
 // If you want a reasonable place to start walking through the code, 
-// go to the 'handler' function at the end.
+// go to the 'handler' function.
                     
 #define DEFAULT_TCP_STATE_PATH "/tmp/dnsparse_tcp.state"
 void handler(uint8_t *, const struct pcap_pkthdr *, const uint8_t *);
@@ -224,7 +223,21 @@ int main(int argc, char **argv) {
         "   record occurred via stderr when processing completes.\n"
         "-x\n"
         "   Exclude the given reservation record types by \n"
-        "   number. This option can be given multiple times.\n",
+        "   number. This option can be given multiple times.\n"
+        "\n"
+        "Supported protocols:\n"
+        "DNS can ride on a number of protocols, and dns_parse supports\n"
+        "a fair number of them, including:\n"
+        "Ethernet, MPLS, IPv4, IPv6, UDP and TCP.\n"
+        "IPv4 and IPv6 fragments - fragments are reassembled, but data\n"
+        "   may be lost if the fragments are split across multiple pcaps.\n"
+        "TCP reassembly - TCP packets are reassembled, but the resulting\n"
+        "   data may be offset from their time of occurance. Partial flow\n"
+        "   reassembly is supported; long flows are printed whenever a \n"
+        "   a lull in that flow occurs (500 ms since the last packet, \n"
+        "   this can only be changed at compile time).\n"
+        "   TCP flow state is saved at the end of execution, and loaded\n"
+        "   at the beginning. See the -S option to disable.\n",
         DEFAULT_TCP_STATE_PATH);
         return -1;
     }
