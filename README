@@ -46,3 +46,30 @@ A reasonable set of options is:
 This gets you newline separated resource records an empty main record separator,
 pretty printed dates, and the shorthand for the record types (ie. A or CNAME).
 Printing of additional and name server records is disabled (by default).
+The output will look like this:
+
+2013-02-13 14:56:06.002102,75.32.12.33,75.32.37.16,61,u,r,AA
+? mass.blah.com A
+! mass.blah.com A 75.32.37.40
+
+2013-02-13 14:56:06.002471,33.53.3.59,112.78.117.89,54,u,q,NA
+? getsystemsinc.com MX
+
+2013-02-13 14:56:06.005718,75.32.207.52,75.32.12.33,53,u,q,NA
+? 11.207.165.128.in-addr.arpa PTR
+
+2013-02-13 14:56:06.006109,75.32.12.33,75.32.207.52,80,u,r,AA
+? 11.207.165.128.in-addr.arpa PTR
+! 11.207.165.128.in-addr.arpa PTR cato.blah.com
+
+2013-02-13 14:56:06.006189,75.32.157.134,75.32.12.33,47,u,q,NA
+? blerg-dd.blah.com A
+
+2013-02-13 14:56:06.006212,192.12.184.7,33.53.3.1,42,u,q,NA
+? api.flyertown.ca A
+
+2013-02-13 14:56:06.006570,75.32.12.33,75.32.157.134,63,u,r,AA
+? blerg-dd.blah.com A
+! blerg-dd.blah.com A 172.16.236.126
+
+
