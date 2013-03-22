@@ -1,8 +1,8 @@
 -- OVERVIEW --
-dns_parse takes as input a pcap of DNS data and produces a comple, trivially
+dns_parse takes as input a pcap of DNS data and produces a complete, trivially
 parsable, human readable ASCII version of the same data. It's generally useful
 for network monitoring (send the data to Splunk or similar). The most common
-carrying are supported, as well as packet deduplication.
+carrying protocols are supported, as well as packet deduplication.
 
 -- SUPPORTED PROTOCOLS --
 Ethernet
