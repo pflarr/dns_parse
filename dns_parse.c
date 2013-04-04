@@ -403,7 +403,8 @@ void print_summary(ip_info * ip, transport_info * trns, dns_info * dns,
     dns_rr_free(dns->answers);
     dns_rr_free(dns->name_servers);
     dns_rr_free(dns->additional);
-    fflush(stdout); fflush(stderr);
+    fflush(stdout); 
+    fflush(stderr);
 }
 
 // Print all resource records in the given section.
@@ -757,7 +758,7 @@ uint32_t dns_parse(uint32_t pos, struct pcap_pkthdr *header,
 
     SHOW_RAW(
         printf("dns\n");
-        print_packet(header->len, packet, pos, header->len, 2);
+        print_packet(header->len, packet, pos, header->len, 8);
     )
     VERBOSE(
         printf("DNS id:%d, qr:%d, AA:%d, TC:%d, rcode:%d\n", 

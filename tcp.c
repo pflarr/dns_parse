@@ -335,8 +335,11 @@ void tcp_expire(config * conf, const struct timeval * now ) {
             if (pos != offset + 2 + dns_len) {
                 // If these don't match up, then there is no point in
                 // continuing for this session.
-                fprintf(stderr, "Mismatched TCP lengths: %u, %llu.\n",
-                        pos, (offset + 2 + dns_len));
+                DBG(
+                    fprintf(stderr, "Mismatched TCP lengths: %u, %llu.\n",
+                            pos, (offset + 2 + dns_len));
+                    fflush(stderr);
+                )
                 break;
             }
             // Move on to the next DNS header in the stream.
