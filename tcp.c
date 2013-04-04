@@ -289,7 +289,8 @@ void tcp_expire(config * conf, const struct timeval * now ) {
                 offset = 0;
             } else { 
                 char * bad_data = escape_data(head->data, 0, head->len);
-                printf("Bad TCP stream: %s\n", bad_data);
+                print_ts(&(head->ts), conf);
+                printf(", Bad TCP stream: %s\n", bad_data);
                 free(bad_data);
             }
         }

@@ -348,38 +348,24 @@ void handler(uint8_t * args, const struct pcap_pkthdr *orig_header,
 // Output the DNS data.
 void print_summary(ip_info * ip, transport_info * trns, dns_info * dns,
                    struct pcap_pkthdr * header, config * conf) {
-    char date[200];
     char proto;
 
     uint32_t dnslength;
     dns_rr *next;
     dns_question *qnext;
 
-    // Print the time stamp.
-    if (conf->PRETTY_DATE) {
-        struct tm *time;
-        size_t result;
-        char t_date[200];
-        const char * format = "%F %T";
-        time = localtime(&(header->ts.tv_sec));
-        result = strftime(t_date, 200, format, time);
-        if (result == 0) strncpy(date, "Date format error", 20);
-        sprintf(date, "%s.%06d", t_date, (int)header->ts.tv_usec);
-    } else 
-        sprintf(date, "%d.%06d", (int)header->ts.tv_sec, 
-                                 (int)header->ts.tv_usec);
-   
+    print_ts(&(header->ts), conf);
+  
     // Print the transport protocol indicator.
     if (ip->proto == 17) {
         proto = 'u';
     } else if (ip->proto == 6) {
         proto = 't';
     }
-    fflush(stdout);
     dnslength = trns->length;
 
     // Print the IP addresses and the basic query information.
-    printf("%s,%s,", date, iptostr(&ip->src));
+    printf(",%s,", iptostr(&ip->src));
     printf("%s,%d,%c,%c,%s", iptostr(&ip->dst),
            dnslength, proto, dns->qr ? 'r':'q', dns->AA?"AA":"NA");
 
@@ -483,6 +469,27 @@ void dns_question_free(dns_question * question) {
     dns_question_free(question->next);
     free(question);
 }
+
+// Print the time stamp.
+void print_ts(struct timeval * ts, config * conf) {
+    char date[200];
+    if (conf->PRETTY_DATE) {
+        struct tm *time;
+        size_t result;
+        char t_date[200];
+        const char * format = "%F %T";
+        time = localtime(&(ts->tv_sec));
+        result = strftime(t_date, 200, format, time);
+        if (result == 0) {
+            printf("0000-00-00 00:00:00.000000");
+            fprintf(stderr, "Date format error\n");
+        }
+        printf("%s.%06d", t_date, (int)ts->tv_usec);
+    } else {
+        printf("%d.%06d", (int)ts->tv_sec, (int)ts->tv_usec);
+    }
+}
+ 
 
 // Parse the questions section of the dns protocol.
 // pos - offset to the start of the questions section.

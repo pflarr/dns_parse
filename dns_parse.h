@@ -125,4 +125,7 @@ void print_summary(ip_info * ip, transport_info * trns, dns_info * dns,
 // wrap - How many bytes to print per line.
 void print_packet(uint32_t max_len, uint8_t *packet,
                   uint32_t start, uint32_t end, u_int wrap);
+
+// Print the given timestamp out on the given file*, as configured.
+void print_ts(struct timeval *, config *);
 #endif

@@ -3,3 +3,4 @@
 *.o
 test_strutils
 bin/dns_parse
+samples
