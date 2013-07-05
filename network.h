@@ -110,5 +110,5 @@ void ip_frag_free(config *);
 
 // Convert an ip struct to a string. The returned buffer is internal, 
 // and need not be freed. 
-inline char * iptostr(ip_addr *);
+char * iptostr(ip_addr *);
 #endif

@@ -1,3 +1,6 @@
+CC = gcc
+CFLAGS = -Wall -O2 -mtune=native
+
 build: bin/dns_parse
 
 #DEBUG=-g
@@ -23,19 +26,19 @@ OBJ=rtypes.o strutils.o network.o tcp.o
 
 bin/dns_parse: dns_parse.c ${OBJ}
 	mkdir -p bin
-	gcc ${DEBUG} ${OBJ} -o bin/dns_parse dns_parse.c -lpcap 
+	${CC} ${CFLAGS} ${DEBUG} ${OBJ} -o bin/dns_parse dns_parse.c -lpcap
 
 rtypes.o: rtypes.c rtypes.h
-	gcc ${DEBUG} -c rtypes.c
+	${CC} ${CFLAGS} ${DEBUG} -c rtypes.c
 
 strutils.o: strutils.h strutils.c
-	gcc ${DEBUG} -c strutils.c
+	${CC} ${CFLAGS} ${DEBUG} -c strutils.c
 
 tcp.o:  tcp.h tcp.c dns_parse.h
-	gcc ${DEBUG} -c tcp.c
+	${CC} ${CFLAGS} ${DEBUG} -c tcp.c
 
 network.o:  network.h network.c dns_parse.h
-	gcc ${DEBUG} -c network.c
+	${CC} ${CFLAGS} ${DEBUG} -c network.c
 
 clean:
 	rm -f *.o
@@ -43,5 +46,5 @@ clean:
 
 test_strutils: strutils.c
 	mkdir bin
-	gcc -o bin/test_strutils strutils.c
+	${CC} -o bin/test_strutils strutils.c
 	./bin/test_strutils

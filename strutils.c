@@ -6,7 +6,7 @@
 
 char * escape_data(const uint8_t * packet, uint32_t start, uint32_t end) { 
     int i,o;
-    uint8_t c, upper, lower;
+    uint8_t c;
     unsigned int length=1;
 
     char * outstr;
@@ -43,14 +43,11 @@ char * escape_data(const uint8_t * packet, uint32_t start, uint32_t end) {
 
 char * read_rr_name(const uint8_t * packet, uint32_t * packet_p, 
                     uint32_t id_pos, uint32_t len) {
-    
     uint32_t i, next, pos=*packet_p;
     uint32_t end_pos = 0;
     uint32_t name_len=0;
     uint32_t steps = 0;
     char * name;
-    int bc = 0;
-    uint8_t badchars[2000];
 
     // Scan through the name, one character at a time. We need to look at 
     // each character to look for values we can't print in order to allocate
@@ -87,7 +84,7 @@ char * read_rr_name(const uint8_t * packet, uint32_t * packet_p,
         }
     }
     if (end_pos == 0) end_pos = pos;
-  
+
     // Due to the nature of DNS name compression, it's possible to get a
     // name that is infinitely long. Return an error in that case.
     // We use the len of the packet as the limit, because it shouldn't 
@@ -149,10 +146,9 @@ static const char cb64[]="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz01
 
 char * b64encode(const uint8_t * data, uint32_t pos, uint16_t length) {
     char * out;
-    uint8_t next, last, bits = 24;
     uint32_t end_pos = pos + length;
     uint32_t op = 0;
-   
+
     // We allocate a little extra here sometimes, but in this application
     // these strings are almost immediately de-allocated anyway.
     out = malloc(sizeof(char) * ((length/3 + 1)*4 + 1));
@@ -164,11 +160,11 @@ char * b64encode(const uint8_t * data, uint32_t pos, uint16_t length) {
         out[op+2] = cb64[ ((data[pos+1] & 0xf) << 2) | 
                           ((data[pos+2] & 0xc0) >> 6) ];
         out[op+3] = cb64[ data[pos+2] & 0x3f ];
-    
+
         op = op + 4;
         pos = pos + 3;
     }
-    
+
     if ((end_pos - pos) == 2) {
         out[op] = cb64[ data[pos] >> 2 ];
         out[op+1] = cb64[ ((data[pos] & 0x3) << 4) | 
@@ -183,7 +179,7 @@ char * b64encode(const uint8_t * data, uint32_t pos, uint16_t length) {
         op = op + 4;
     }
     out[op] = 0; 
-   
+
     return out;
 }
 
@@ -200,7 +196,7 @@ int main() {
                     "blahblahblah"; 
     char * s = escape_data(ed_data, 2, 103);
     char * result = "\\x00\\x0f\\x10\\x1f\\x5c\\x7fabcdefghijklmnopqrstuvwxyz1234567890ZYXWVUTSRQPONMLKJIHGFEDCBA+_)(*&^%$#@!~`-=[]{}|;':<>?,./\\x5c \"";
-    
+
     uint8_t * name_data = "5junk\x03rat\x04\x7f\x00\xe3\\\x03gov\x00tenjunkchr"
                          "\x05hello\x03the\xc0\x01";
     const char * name_result = "hello.the.rat.\\x7f\\x00\\xe3\\x5c.gov";
@@ -241,7 +237,7 @@ int main() {
     }
 
     free(s); 
-    
+
     for (i=0; i<256; i++) b64data[i] = i;
 
     b64result = b64encode(b64data,0,256);
@@ -261,4 +257,3 @@ int main() {
     return 0;
 }
 #endif
-    

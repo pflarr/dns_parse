@@ -9,8 +9,6 @@ uint32_t eth_parse(struct pcap_pkthdr *header, uint8_t *packet,
                    eth_info * eth) {
     uint32_t pos = 0;
 
-    int i;
-
     if (header->len < 14) {
         fprintf(stderr, "Truncated Packet(eth)\n");
         return 0;
@@ -25,7 +23,7 @@ uint32_t eth_parse(struct pcap_pkthdr *header, uint8_t *packet,
 
     // Skip VLAN tagging 
     if (packet[pos] == 0x81 && packet[pos+1] == 0) pos = pos + 4;
-    
+
     eth->ethtype = (packet[pos] << 8) + packet[pos+1];
     pos = pos + 2;
 
@@ -57,7 +55,7 @@ uint32_t mpls_parse(uint32_t pos, struct pcap_pkthdr *header,
             fprintf(stderr, "Truncated Packet(mpls)\n");
             return 0;
         }
-        
+
         bos = packet[pos + 2] & 0x01;
         pos += 4;
         DBG(printf("MPLS layer. \n");)
@@ -91,11 +89,10 @@ uint32_t ipv4_parse(uint32_t pos, struct pcap_pkthdr *header,
                     uint8_t ** p_packet, ip_info * ip, config * conf) {
 
     uint32_t h_len;
-    int i;
     ip_fragment * frag = NULL;
     uint8_t frag_mf;
     uint16_t frag_offset;
-    
+
     // For convenience and code consistency, dereference the packet **.
     uint8_t * packet = *p_packet;
 
@@ -104,7 +101,7 @@ uint32_t ipv4_parse(uint32_t pos, struct pcap_pkthdr *header,
         p_packet = NULL;
         return 0;
     }
-   
+
     h_len = packet[pos] & 0x0f;
     ip->length = (packet[pos+2] << 8) + packet[pos+3] - h_len*4;
     ip->proto = packet[pos+9];
@@ -116,7 +113,7 @@ uint32_t ipv4_parse(uint32_t pos, struct pcap_pkthdr *header,
     frag_mf = (packet[pos+6] & 0x20) >> 5;
     // Offset for this data in the fragment.
     frag_offset = ((packet[pos+6] & 0x1f) << 11) + (packet[pos+7] << 3);
-    
+
     SHOW_RAW(
         printf("\nipv4\n");
         print_packet(header->len, packet, pos, pos + 4*h_len, 4);
@@ -269,13 +266,12 @@ uint32_t ipv6_parse(uint32_t pos, struct pcap_pkthdr *header,
             default:
                 fprintf(stderr, "Unsupported IPv6 proto(%u).\n", next_hdr);
                 p_packet = NULL; return 0;
-                
         }
     }
 
     ip->proto = next_hdr;
     ip->length = ip->length - header_len;
-    
+
     // Handle fragments.
     if (frag != NULL) {
         frag->src = ip->src;
@@ -313,7 +309,7 @@ uint32_t ipv6_parse(uint32_t pos, struct pcap_pkthdr *header,
 ip_fragment * ip_frag_add(ip_fragment * this, config * conf) {
     ip_fragment ** curr = &(conf->ip_fragment_head);
     ip_fragment ** found = NULL;
- 
+
     DBG(printf("Adding fragment at %p\n", this);)
 
     // Find the matching fragment list.
@@ -327,7 +323,7 @@ ip_fragment * ip_frag_add(ip_fragment * this, config * conf) {
         }
         curr = &(*curr)->next;
     }
-    
+
     // At this point curr will be the head of our matched chain of fragments, 
     // and found will be the same. We'll use found as our pointer into this
     // chain, and curr to remember where it starts.
@@ -419,7 +415,7 @@ ip_fragment * ip_frag_add(ip_fragment * this, config * conf) {
 void ip_frag_free(config * conf) {
     ip_fragment * curr;
     ip_fragment * child;
-    
+
     while (conf->ip_fragment_head != NULL) {
         curr = conf->ip_fragment_head;
         conf->ip_fragment_head = curr->next;
@@ -436,7 +432,6 @@ void ip_frag_free(config * conf) {
 uint32_t udp_parse(uint32_t pos, struct pcap_pkthdr *header, 
                    uint8_t *packet, transport_info * udp, 
                    config * conf) {
-    uint16_t test;
     if (header->len - pos < 8) {
         fprintf(stderr, "Truncated Packet(udp)\n");
         return 0;
@@ -454,7 +449,7 @@ uint32_t udp_parse(uint32_t pos, struct pcap_pkthdr *header,
 
 // Convert an ip struct to a string. The returned buffer is internal, 
 // and need not be freed. 
-inline char * iptostr(ip_addr * ip) {
+char * iptostr(ip_addr * ip) {
     if (ip->vers == IPv4) {
         inet_ntop(AF_INET, (const void *) &(ip->addr.v4),
                   IP_STR_BUFF, INET6_ADDRSTRLEN);
