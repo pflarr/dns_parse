@@ -29,9 +29,8 @@ int main(int argc, char **argv) {
     char errbuf[PCAP_ERRBUF_SIZE];
     int read;
     config conf;
-    
+
     int c;
-    char *cvalue = NULL;
     int print_type_freq = 0;
     int arg_failure = 0;
 
@@ -351,16 +350,17 @@ void print_summary(ip_info * ip, transport_info * trns, dns_info * dns,
     char proto;
 
     uint32_t dnslength;
-    dns_rr *next;
     dns_question *qnext;
 
     print_ts(&(header->ts), conf);
-  
+
     // Print the transport protocol indicator.
     if (ip->proto == 17) {
         proto = 'u';
     } else if (ip->proto == 6) {
         proto = 't';
+    } else {
+        return;
     }
     dnslength = trns->length;
 
@@ -382,8 +382,7 @@ void print_summary(ip_info * ip, transport_info * trns, dns_info * dns,
             rr_parser_container * parser; 
             parser = find_parser(qnext->cls, qnext->type);
             if (parser->name == NULL) 
-                printf("%s UNKNOWN(%s,%d)", qnext->name, parser->name, 
-                                            qnext->type, qnext->cls);
+                printf("%s UNKNOWN(%s,%d)", qnext->name, parser->name, qnext->type);
             else 
                 printf("%s %s", qnext->name, parser->name);
         } else
@@ -473,7 +472,6 @@ void dns_question_free(dns_question * question) {
 
 // Print the time stamp.
 void print_ts(struct timeval * ts, config * conf) {
-    char date[200];
     if (conf->PRETTY_DATE) {
         struct tm *time;
         size_t result;
@@ -529,7 +527,7 @@ uint32_t parse_questions(uint32_t pos, uint32_t id_pos,
         }
         current->type = (packet[pos] << 8) + packet[pos+1];
         current->cls = (packet[pos+2] << 8) + packet[pos+3];
-        
+
         // Add this question object to the list.
         if (last == NULL) *root = current;
         else last->next = current;
@@ -539,7 +537,7 @@ uint32_t parse_questions(uint32_t pos, uint32_t id_pos,
         VERBOSE(printf("question->name: %s\n", current->name);)
         VERBOSE(printf("type %d, cls %d\n", current->type, current->cls);)
    }
-    
+
     return pos;
 }
 
@@ -553,12 +551,9 @@ uint32_t parse_rr(uint32_t pos, uint32_t id_pos, struct pcap_pkthdr *header,
     rr_parser_container * parser;
     rr_parser_container opts_cont = {0,0, opts};
 
-    uint32_t temp_pos; // Only used when parsing SRV records.
-    char * temp_data; // Also used only for SRV records.
-
     rr->name = NULL;
     rr->data = NULL;
-    
+
     rr->name = read_rr_name(packet, &pos, id_pos, header->len);
     // Handle a bad rr name.
     // We still want to print the rest of the escaped rr data.
@@ -573,9 +568,9 @@ uint32_t parse_rr(uint32_t pos, uint32_t id_pos, struct pcap_pkthdr *header,
         rr->data = escape_data(packet, pos, header->len);
         return 0;
     }
-    
+
     if ((header->len - pos) < 10 ) return 0;
-    
+
     rr->type = (packet[pos] << 8) + packet[pos+1];
     rr->rdlength = (packet[pos+8] << 8) + packet[pos + 9];
     // Handle edns opt RR's differently.
@@ -604,7 +599,7 @@ uint32_t parse_rr(uint32_t pos, uint32_t id_pos, struct pcap_pkthdr *header,
     if (conf->MISSING_TYPE_WARNINGS && &default_rr_parser == parser) 
         fprintf(stderr, "Missing parser for class %d, type %d\n", 
                         rr->cls, rr->type);
-    
+
     // Make sure the data for the record is actually there.
     // If not, escape and print the raw data.
     if (header->len < (rr_start + 10 + rr->rdlength)) {
@@ -647,7 +642,7 @@ uint32_t parse_rr_set(uint32_t pos, uint32_t id_pos,
         // Create and clear the data in a new dns_rr object.
         current = malloc(sizeof(dns_rr));
         current->next = NULL; current->name = NULL; current->data = NULL;
-        
+
         pos = parse_rr(pos, id_pos, header, packet, current, conf);
         // If a non-recoverable error occurs when parsing an rr, 
         // we can only return what we've got and give up.
@@ -666,9 +661,8 @@ uint32_t parse_rr_set(uint32_t pos, uint32_t id_pos,
 // Generates a hash from the current packet. 
 int dedup(uint32_t pos, struct pcap_pkthdr *header, uint8_t * packet,
           ip_info * ip, transport_info * trns, config * conf) {
-   
+
     uint64_t hash = 0;
-    uint64_t mask = 0xffffffffffffffff;
     uint32_t i;
 
     // Put the hash of the src address in the upper 32 bits,
@@ -683,7 +677,7 @@ int dedup(uint32_t pos, struct pcap_pkthdr *header, uint8_t * packet,
         }
     }
     hash += ((uint64_t)trns->srcport << 32) + trns->dstport;
-    
+
     // Add in the payload.
     for (; pos + 8 < header->len; pos+=8) {
         hash += *(uint64_t*)(packet + pos);
@@ -710,7 +704,7 @@ int dedup(uint32_t pos, struct pcap_pkthdr *header, uint8_t * packet,
             return 1;
         }
     }
-   
+
     // There was no match. Replace the oldest dedup.
     conf->dedup_hashes[conf->dedup_pos] = hash;
     conf->dedup_pos = (conf->dedup_pos + 1) % conf->DEDUPS;
@@ -723,17 +717,15 @@ int dedup(uint32_t pos, struct pcap_pkthdr *header, uint8_t * packet,
 uint32_t dns_parse(uint32_t pos, struct pcap_pkthdr *header, 
                    uint8_t *packet, dns_info * dns,
                    config * conf, uint8_t force) {
-    
-    int i;
+
     uint32_t id_pos = pos;
-    dns_rr * last = NULL;
 
     if (header->len - pos < 12) {
         char * msg = escape_data(packet, id_pos, header->len);
         fprintf(stderr, "Truncated Packet(dns): %s\n", msg); 
         return 0;
     }
-    
+
     dns->id = (packet[pos] << 8) + packet[pos+1];
     dns->qr = packet[pos+2] >> 7;
     dns->AA = (packet[pos+2] & 0x04) >> 2;

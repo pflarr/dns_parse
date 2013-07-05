@@ -179,7 +179,6 @@ char * dnskey(const uint8_t * packet, uint32_t pos, uint32_t id_pos,
     uint16_t flags = (packet[pos] << 8) + packet[pos+1];
     uint8_t proto = packet[pos+2];
     uint8_t algorithm = packet[pos+3];
-    int i;
     char *buffer, *key;
 
     key = b64encode(packet, pos+4, rdlength-4);

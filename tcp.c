@@ -16,7 +16,7 @@ uint16_t tcp_checksum(ip_info *ip, uint8_t *packet,
     if (ip->src.vers == IPv4) {
         uint32_t srcip = ip->src.addr.v4.s_addr; 
         uint32_t dstip = ip->dst.addr.v4.s_addr; 
-      
+
         // Put together the psuedo-header preamble for the checksum calculation.
         // I handle the IP's in a rather odd manner and save a few cycles.
         // Instead of arranging things such that for ip d.c.b.a -> cd + ab
@@ -38,15 +38,15 @@ uint16_t tcp_checksum(ip_info *ip, uint8_t *packet,
         sum += ip->length;
         sum += TCP;
     }
-      
+
     // Add the TCP Header up to the checksum, which we'll skip.
     for (i=0; i < 16; i += 2) {
         sum += LE_U_SHORT(packet, pos + i);
     }
-    
+
     // Skip the checksum.
     pos = pos + i + 2;
-    
+
     // Add the rest of the packet, stopping short of a final odd byte.
     while (pos < header->len - 1) {
         sum += LE_U_SHORT(packet, pos);
@@ -86,14 +86,12 @@ void tcp_parse(uint32_t pos, struct pcap_pkthdr *header,
     tcp_info ** next;
     // Will hold the matching session when we look.
     tcp_info * sess = NULL;
-    int i;
     unsigned int offset;
-    uint32_t data_len;
     uint16_t checksum;
     uint16_t actual_checksum;
-   
+
     tcp = malloc(sizeof(tcp_info));
-    
+
     // Get basic TCP header information.
     tcp->next_sess = NULL;
     tcp->next_pkt = NULL;
@@ -117,7 +115,7 @@ void tcp_parse(uint32_t pos, struct pcap_pkthdr *header,
         return;
     }
     tcp->len = ip->length - offset*4;
-  
+
     // Ignore packets with a bad checksum
     checksum = LE_U_SHORT(packet, pos + 16);
 
@@ -131,10 +129,8 @@ void tcp_parse(uint32_t pos, struct pcap_pkthdr *header,
         DBG(printf("Bad checksum.");)
         free(tcp);
         return;
-    } else if (checksum == 0x0000 && tcp->rst) {
-        // Ignore, since it's a reset packet.
-    }
-   
+    } else
+
     // Only allocated space for the TCP data if there is any.
     if (tcp->len > 0) {
         tcp->data = malloc(sizeof(char) * (tcp->len));
@@ -160,10 +156,10 @@ void tcp_parse(uint32_t pos, struct pcap_pkthdr *header,
              IP_CMP((*next)->dst, tcp->dst) && 
              (*next)->srcport == tcp->srcport &&
              (*next)->dstport == tcp->dstport) {
-            
+
             DBG(printf("Match found:\n  ");)
             DBG(tcp_print(*next);)
-           
+
             // This is the matching session.
             sess = *next;
 
@@ -218,10 +214,10 @@ void tcp_expire(config * conf, const struct timeval * now ) {
             // first packet of the session.
             tcp_info * next_sess = (*next)->next_sess;
             // Add this session to the list of of returned sessions
-            
+
             *ptr = tcp_assemble(*next);
             // *next is probably freed now, unless it was returned as *ptr.
-             
+
             // Remove this session from the main session list.
             *next = next_sess;
 
@@ -230,7 +226,7 @@ void tcp_expire(config * conf, const struct timeval * now ) {
             if (*ptr == NULL) {
                 continue;
             }
-            
+
             // Set ptr to point to the where the next expired session
             // should be added to the list.
             ptr = &(*ptr)->next_sess;
@@ -240,9 +236,8 @@ void tcp_expire(config * conf, const struct timeval * now ) {
             // Skip this session, it isn't expired.
             next = &(*next)->next_sess;
         }
-        
     }
-   
+
     // Step through all the assembled sessions, dns parse the data, and
     // output it.
     //
@@ -252,8 +247,6 @@ void tcp_expire(config * conf, const struct timeval * now ) {
     // With TCP DNS, the DNS data is prepended with a two byte length,
     // so we at least know how long it is. 
     while (head != NULL) {
-        uint32_t size = (head->data[0] << 8) + head->data[1];
-        
         // There is a possiblity that this session won't start at the
         // the beginning of the data; that we've caught a session mid-stream.
         // Assuming we have expired it at a reasonable end, we can use the 
@@ -277,7 +270,7 @@ void tcp_expire(config * conf, const struct timeval * now ) {
                 break;
             }
         }
-        
+
         // If we couldn't find the right offset, just try an offset of 
         // zero as long as that offset isn't longer than all of our data.
         if (offset_found == 0) {
@@ -310,7 +303,7 @@ void tcp_expire(config * conf, const struct timeval * now ) {
             transport_info trns;
             struct pcap_pkthdr header;
             uint32_t pos;
-            
+
             // Create a fake packet header, transport and IP structs.
             header.ts = head->ts;
             header.caplen = head->len;
@@ -331,7 +324,7 @@ void tcp_expire(config * conf, const struct timeval * now ) {
                 // Print the data if there wasn't an error.
                 print_summary(&ip, &trns, &dns, &header, conf);
             }
-        
+
             if (pos != offset + 2 + dns_len) {
                 // If these don't match up, then there is no point in
                 // continuing for this session.
@@ -385,7 +378,7 @@ tcp_info * tcp_assemble(tcp_info * base) {
     uint32_t * data_lengths;
     size_t dc_i = 0;
     uint32_t i;
-    
+
     DBG(printf("In TCP_assembly.\n");)
     DBG(printf("Assembling:\n");)
     DBG(tcp_print(base);)
@@ -414,7 +407,7 @@ tcp_info * tcp_assemble(tcp_info * base) {
         }
         curr = &(*curr)->next_pkt;
     }
-    
+
     if (origin == NULL) {
         // If we fail to find the syn packet, use the earliest packet.
         // This means we might jump in in the middle of a session, but
@@ -453,7 +446,7 @@ tcp_info * tcp_assemble(tcp_info * base) {
                 curr = next_best;
             }
         }
-        
+
         // Set the origin to this packet if they have the same sequence.
         // Guarantees that the origin will be a packet removed from the
         // packet list (and thus not thrown away later).
@@ -461,7 +454,7 @@ tcp_info * tcp_assemble(tcp_info * base) {
         if (*curr != NULL && (origin->sequence == (*curr)->sequence)) {
             origin = *curr;
         }
- 
+
         if (*curr != NULL) {
             DBG(printf("Current assembly packet: ");)
             DBG(tcp_print(*curr);)
@@ -469,11 +462,11 @@ tcp_info * tcp_assemble(tcp_info * base) {
             //DBG(print_packet((*curr)->len, (*curr)->data, 0, (*curr)->len, 8);)
             // We found a match.
             // Save the data and it's length.
-            data_chain[dc_i] = (*curr)->data;
+            data_chain[dc_i] = (char*) (*curr)->data;
             data_lengths[dc_i] = (*curr)->len;
             total_length += (*curr)->len;
             dc_i++;
-            
+
             // Look for the next sequence number.
             DBG(printf("curr_seq, seq: %x, %x\n", curr_seq, (*curr)->sequence);)
             if ((*curr)->len == 0) {
@@ -481,7 +474,7 @@ tcp_info * tcp_assemble(tcp_info * base) {
             } else {
                 curr_seq += (*curr)->len;
             }
-            
+
             // Remove this packet from the list.
             tmp = *curr;
             *curr = (*curr)->next_pkt;
@@ -620,13 +613,13 @@ tcp_info * tcp_load_state(config * conf) {
     tcp_info * first_sess = NULL;
     tcp_info ** sess = &first_sess;
     int has_prev = 0;
- 
+
     if (ret != 0) {
         // No prior state file.
         fprintf(stderr, "No prior tcp state file.\n");
         return NULL;
     }
-    
+
     infile = fopen(conf->TCP_STATE_PATH, "r");
     if (infile == NULL) {
         fprintf(stderr, "Could not open existing tcp state file.\n");
@@ -650,7 +643,7 @@ tcp_info * tcp_load_state(config * conf) {
         }
         has_prev = (pkt->prev_pkt == NULL);
         pkt->prev_pkt = NULL;
-        
+
         pkt->data = malloc(sizeof(uint8_t) * pkt->len);
         read = fread(pkt->data, sizeof(uint8_t), pkt->len, infile);
         if (read != pkt->len) {
@@ -684,5 +677,3 @@ void tcp_print(tcp_info * tcp) {
                tcp->fin, tcp->rst, tcp->len);
     }
 }
-
-
