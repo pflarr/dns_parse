@@ -31,10 +31,9 @@ int main(int argc, char **argv) {
     config conf;
 
     int c;
-    int print_type_freq = 0;
     int arg_failure = 0;
 
-    const char * OPTIONS = "cdfhm:MnurtD:x:s:S";
+    const char * OPTIONS = "cdfhlm:MnrtD:x:s:S";
 
     // Setting configuration defaults.
     uint8_t TCP_SAVE_STATE = 1;
@@ -44,6 +43,7 @@ int main(int argc, char **argv) {
     conf.SEP = '\t';
     conf.AD_ENABLED = 0;
     conf.NS_ENABLED = 0;
+    conf.LINUX_COOKED = 0;
     conf.PRETTY_DATE = 0;
     conf.PRINT_RR_NAME = 0;
     conf.MISSING_TYPE_WARNINGS = 0;
@@ -63,6 +63,9 @@ int main(int argc, char **argv) {
             case 'f':
                 print_parsers();
                 return 0;
+            case 'l':
+                conf.LINUX_COOKED = 1;
+                break;
             case 'm':
                 conf.RECORD_SEP = optarg;
                 conf.SEP = '\n';
@@ -84,9 +87,6 @@ int main(int argc, char **argv) {
                 break;
             case 't':
                 conf.PRETTY_DATE = 1; 
-                break;
-            case 'u':
-                print_type_freq = 1;
                 break;
             case 'D':
                 conf.DEDUPS = strtoul(optarg, NULL, 10);
@@ -192,6 +192,8 @@ int main(int argc, char **argv) {
         "-f\n"
         "   Print out documentation on the various resource \n"
         "   record parsers.\n"
+        "-l\n"
+        "   Parse Linux Cooked Capture format. \n"
         "-n\n"
         "   Enable the parsing and output of the Name Server\n"
         "   Records section. Disabled by default.\n"
@@ -217,9 +219,6 @@ int main(int argc, char **argv) {
         "-t \n"
         "   Print the time/date as in Y-m-d H:M:S (ISO 8601) format.\n"
         "   The time will be in the local timezone.\n"
-        "-u \n"
-        "   Print a record of the how many occurances of each class,type\n"
-        "   record occurred via stderr when processing completes.\n"
         "-x\n"
         "   Exclude the given reservation record types by \n"
         "   number. This option can be given multiple times.\n"
@@ -288,7 +287,7 @@ void handler(uint8_t * args, const struct pcap_pkthdr *orig_header,
     
     // Parse the ethernet frame. Errors are typically handled in the parser
     // functions. The functions generally return 0 on error.
-    pos = eth_parse(&header, packet, &eth);
+    pos = eth_parse(&header, packet, &eth, conf);
     if (pos == 0) return;
 
     // MPLS parsing is simple, but leaves us to guess the next protocol.

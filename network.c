@@ -6,7 +6,7 @@
 
 // Parse the ethernet headers, and return the payload position (0 on error).
 uint32_t eth_parse(struct pcap_pkthdr *header, uint8_t *packet,
-                   eth_info * eth) {
+                   eth_info * eth, config * conf) {
     uint32_t pos = 0;
 
     if (header->len < 14) {
@@ -20,6 +20,11 @@ uint32_t eth_parse(struct pcap_pkthdr *header, uint8_t *packet,
         pos++;
     }
     pos = pos + 6;
+   
+    // Skip the extra 2 byte field inserted in "Linux Cooked" captures.
+    if (conf->LINUX_COOKED == 1) {
+        pos = pos + 2;
+    }
 
     // Skip VLAN tagging 
     if (packet[pos] == 0x81 && packet[pos+1] == 0) pos = pos + 4;

@@ -44,6 +44,7 @@ typedef struct {
     char * RECORD_SEP;
     int AD_ENABLED;
     int NS_ENABLED;
+    int LINUX_COOKED;
     int COUNTS;
     int PRETTY_DATE;
     int PRINT_RR_NAME;

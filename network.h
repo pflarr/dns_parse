@@ -87,7 +87,7 @@ typedef struct {
 // Exceptions are noted.
 
 // No pos is passed, since we always start at 0.
-uint32_t eth_parse(struct pcap_pkthdr *, uint8_t *, eth_info *);
+uint32_t eth_parse(struct pcap_pkthdr *, uint8_t *, eth_info *, config *);
 // This mucks with the eth data, rather than having data of its own.
 uint32_t mpls_parse(uint32_t, struct pcap_pkthdr *, 
                     uint8_t *, eth_info *);
