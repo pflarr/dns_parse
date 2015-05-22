@@ -661,6 +661,7 @@ tcp_info * tcp_load_state(config * conf) {
     // Since the last read was of length zero, (all other cases return or 
     // continue) go ahead and free our last allocated object.
     free(pkt);
+    fclose(infile);
 
     return first_sess;
 }
