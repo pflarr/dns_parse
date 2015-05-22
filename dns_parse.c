@@ -269,6 +269,8 @@ int main(int argc, char **argv) {
         fprintf(stderr, "pcap_dispatch: break!\n");
     } VERBOSE( else fprintf(stderr, "pcap_dispatch: %d packets processed\n", read); )
 
+    pcap_close(pcap_file);
+
     return 0;
 }
 
