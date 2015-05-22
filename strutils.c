@@ -169,7 +169,7 @@ char * b64encode(const uint8_t * data, uint32_t pos, uint16_t length) {
         out[op] = cb64[ data[pos] >> 2 ];
         out[op+1] = cb64[ ((data[pos] & 0x3) << 4) | 
                           ((data[pos+1] & 0xf0) >> 4) ];
-        out[op+2] = out[op+2] = cb64[ ((data[pos+1] & 0xf) << 2) ];
+        out[op+2] = cb64[ ((data[pos+1] & 0xf) << 2) ];
         out[op+3] = '=';
         op = op + 4;
     } else if ((end_pos - pos) == 1) {
