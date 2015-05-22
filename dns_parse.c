@@ -263,6 +263,12 @@ int main(int argc, char **argv) {
     free(conf.dedup_hashes);
     ip_frag_free(&conf);
 
+    if (read == -1) {
+        fprintf(stderr, "pcap_dispatch: %s\n", pcap_geterr(pcap_file));
+    } else if (read == -2) {
+        fprintf(stderr, "pcap_dispatch: break!\n");
+    } VERBOSE( else fprintf(stderr, "pcap_dispatch: %d packets processed\n", read); )
+
     return 0;
 }
 
