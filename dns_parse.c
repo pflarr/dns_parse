@@ -526,6 +526,7 @@ uint32_t parse_questions(uint32_t pos, uint32_t id_pos,
             current->name = malloc(sizeof(char) * (strlen(buffer) +
                                                    strlen(msg) + 1));
             sprintf(current->name, "%s%s", msg, buffer);
+            free(buffer);
             current->type = 0;
             current->cls = 0;
             if (last == NULL) *root = current;
