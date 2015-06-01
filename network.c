@@ -22,7 +22,7 @@ uint32_t eth_parse(struct pcap_pkthdr *header, uint8_t *packet,
     pos = pos + 6;
    
     // Skip the extra 2 byte field inserted in "Linux Cooked" captures.
-    if (conf->LINUX_COOKED == 1) {
+    if (conf->datalink == DLT_LINUX_SLL) {
         pos = pos + 2;
     }
 
@@ -103,7 +103,7 @@ uint32_t ipv4_parse(uint32_t pos, struct pcap_pkthdr *header,
 
     if (header-> len - pos < 20) {
         fprintf(stderr, "Truncated Packet(ipv4)\n");
-        p_packet = NULL;
+        *p_packet = NULL;
         return 0;
     }
 
@@ -151,12 +151,12 @@ uint32_t ipv4_parse(uint32_t pos, struct pcap_pkthdr *header,
         if (frag != NULL) {
             // Update the IP info on the reassembled data.
             header->len = ip->length = frag->end - frag->start;
-            p_packet = &(frag->data);
+            *p_packet = frag->data;
             free(frag);
             return 0;
         }
         // Signals that there is no more work to do on this packet.
-        p_packet = NULL;
+        *p_packet = NULL;
         return 0;
     } 
 
@@ -180,7 +180,7 @@ uint32_t ipv6_parse(uint32_t pos, struct pcap_pkthdr *header,
 
     if (header->len < (pos + 40)) {
         fprintf(stderr, "Truncated Packet(ipv6)\n");
-        p_packet=NULL; return 0;
+        *p_packet=NULL; return 0;
     }
     ip->length = (packet[pos+4] << 8) + packet[pos+5];
     IPv6_MOVE(ip->src, packet + pos + 8);
@@ -190,7 +190,7 @@ uint32_t ipv6_parse(uint32_t pos, struct pcap_pkthdr *header,
     // and any other zero length packets.
     if (ip->length == 0) {
         fprintf(stderr, "Zero Length IP packet, possible Jumbo Payload.\n");
-        p_packet=NULL; return 0;
+        *p_packet=NULL; return 0;
     }
 
     uint8_t next_hdr = packet[pos+6];
@@ -212,7 +212,7 @@ uint32_t ipv6_parse(uint32_t pos, struct pcap_pkthdr *header,
             case IPPROTO_ROUTING:
                 if (header->len < (pos + 16)) {
                     fprintf(stderr, "Truncated Packet(ipv6)\n");
-                    p_packet = NULL; return 0;
+                    *p_packet = NULL; return 0;
                 }
                 next_hdr = packet[pos];
                 // The headers are 16 bytes longer.
@@ -222,32 +222,32 @@ uint32_t ipv6_parse(uint32_t pos, struct pcap_pkthdr *header,
             case 51: // Authentication Header. See RFC4302
                 if (header->len < (pos + 2)) {
                     fprintf(stderr, "Truncated Packet(ipv6)\n");
-                    p_packet = NULL; return 0;
+                    *p_packet = NULL; return 0;
                 } 
                 next_hdr = packet[pos];
                 header_len += (packet[pos+1] + 2) * 4;
                 pos += (packet[pos+1] + 2) * 4;
                 if (header->len < pos) {
                     fprintf(stderr, "Truncated Packet(ipv6)\n");
-                    p_packet = NULL; return 0;
+                    *p_packet = NULL; return 0;
                 } 
                 break;
             case 50: // ESP Protocol. See RFC4303.
                 // We don't support ESP.
                 fprintf(stderr, "Unsupported protocol: IPv6 ESP.\n");
                 if (frag != NULL) free(frag);
-                p_packet = NULL; return 0;
+                *p_packet = NULL; return 0;
             case 135: // IPv6 Mobility See RFC 6275
                 if (header->len < (pos + 2)) {
                     fprintf(stderr, "Truncated Packet(ipv6)\n");
-                    p_packet = NULL; return 0;
+                    *p_packet = NULL; return 0;
                 }  
                 next_hdr = packet[pos];
                 header_len += packet[pos+1] * 8;
                 pos += packet[pos+1] * 8;
                 if (header->len < pos) {
                     fprintf(stderr, "Truncated Packet(ipv6)\n");
-                    p_packet = NULL; return 0;
+                    *p_packet = NULL; return 0;
                 } 
                 break;
             case IPPROTO_FRAGMENT:
@@ -270,7 +270,7 @@ uint32_t ipv6_parse(uint32_t pos, struct pcap_pkthdr *header,
                 break;
             default:
                 fprintf(stderr, "Unsupported IPv6 proto(%u).\n", next_hdr);
-                p_packet = NULL; return 0;
+                *p_packet = NULL; return 0;
         }
     }
 
@@ -292,12 +292,12 @@ uint32_t ipv6_parse(uint32_t pos, struct pcap_pkthdr *header,
         frag = ip_frag_add(frag, conf); 
         if (frag != NULL) {
             ip->length = frag->end - frag->start;
-            p_packet = &(frag->data);
+            *p_packet = frag->data;
             free(frag);
             return 0;
         }
         // Signals that there is no more work to do on this packet.
-        p_packet = NULL;
+        *p_packet = NULL;
         return 0;
     } else {
         return pos;

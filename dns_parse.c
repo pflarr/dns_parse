@@ -33,7 +33,7 @@ int main(int argc, char **argv) {
     int c;
     int arg_failure = 0;
 
-    const char * OPTIONS = "cdfhlm:MnrtD:x:s:S";
+    const char * OPTIONS = "cdfhm:MnrtD:x:s:S";
 
     // Setting configuration defaults.
     uint8_t TCP_SAVE_STATE = 1;
@@ -43,7 +43,6 @@ int main(int argc, char **argv) {
     conf.SEP = '\t';
     conf.AD_ENABLED = 0;
     conf.NS_ENABLED = 0;
-    conf.LINUX_COOKED = 0;
     conf.PRETTY_DATE = 0;
     conf.PRINT_RR_NAME = 0;
     conf.MISSING_TYPE_WARNINGS = 0;
@@ -63,9 +62,6 @@ int main(int argc, char **argv) {
             case 'f':
                 print_parsers();
                 return 0;
-            case 'l':
-                conf.LINUX_COOKED = 1;
-                break;
             case 'm':
                 conf.RECORD_SEP = optarg;
                 conf.SEP = '\n';
@@ -138,6 +134,12 @@ int main(int argc, char **argv) {
             fprintf(stderr, "Could not open pcapfile.\n%s\n", errbuf);
             return -1;
         }
+        conf.datalink = pcap_datalink(pcap_file);
+        if (conf.datalink != DLT_EN10MB && conf.datalink != DLT_LINUX_SLL) {
+            fprintf(stderr, "Unsupported data link layer: %d\n", conf.datalink);
+            arg_failure = 1;
+            pcap_close(pcap_file);
+        }
     } else if (optind >= argc) {
         fprintf(stderr, "No input file specified.\n");
         arg_failure = 1;
@@ -192,8 +194,6 @@ int main(int argc, char **argv) {
         "-f\n"
         "   Print out documentation on the various resource \n"
         "   record parsers.\n"
-        "-l\n"
-        "   Parse Linux Cooked Capture format. \n"
         "-n\n"
         "   Enable the parsing and output of the Name Server\n"
         "   Records section. Disabled by default.\n"
@@ -262,6 +262,14 @@ int main(int argc, char **argv) {
 
     free(conf.dedup_hashes);
     ip_frag_free(&conf);
+
+    if (read == -1) {
+        fprintf(stderr, "pcap_dispatch: %s\n", pcap_geterr(pcap_file));
+    } else if (read == -2) {
+        fprintf(stderr, "pcap_dispatch: break!\n");
+    } VERBOSE( else fprintf(stderr, "pcap_dispatch: %d packets processed\n", read); )
+
+    pcap_close(pcap_file);
 
     return 0;
 }
@@ -518,6 +526,7 @@ uint32_t parse_questions(uint32_t pos, uint32_t id_pos,
             current->name = malloc(sizeof(char) * (strlen(buffer) +
                                                    strlen(msg) + 1));
             sprintf(current->name, "%s%s", msg, buffer);
+            free(buffer);
             current->type = 0;
             current->cls = 0;
             if (last == NULL) *root = current;

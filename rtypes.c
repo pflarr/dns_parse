@@ -66,17 +66,20 @@ char * soa(const uint8_t * packet, uint32_t pos, uint32_t id_pos,
     rname = read_rr_name(packet, &pos, id_pos, plen);
     if (rname == NULL) return mk_error("Bad SOA: ", packet, pos, rdlength);
 
-    serial = (packet[pos] << 8) + packet[pos+1];
-    refresh = (packet[pos+2] << 8) + packet[pos+3];
-    retry = (packet[pos+4] << 8) + packet[pos+5];
-    expire = (packet[pos+6] << 8) + packet[pos+7];
-    minimum = (packet[pos+8] << 8) + packet[pos+9];
+    int i;
+    serial = refresh = retry = expire = minimum = 0;
+    for (i = 0; i < 4; i++) {
+        serial  <<= 8; serial  |= packet[pos+(i+(4*0))];
+        refresh <<= 8; refresh |= packet[pos+(i+(4*1))];
+        retry   <<= 8; retry   |= packet[pos+(i+(4*2))];
+        expire  <<= 8; expire  |= packet[pos+(i+(4*3))];
+        minimum <<= 8; minimum |= packet[pos+(i+(4*4))];
+    }
     
-    // The 5 tens are for the max of ten digits for the numeric fields.
-    // The format string will lose 14 chrs of format marks.
-    // The +1 is for the terminating null.
-    buffer = malloc(sizeof(char) * (strlen(format) + strlen(mname) + 
-                                    strlen(rname) + 10*5 - 14 + 1));
+    // let snprintf() measure the formatted string
+    int len = snprintf(0, 0, format, mname, rname, serial, refresh, retry,
+                       expire, minimum);
+    buffer = malloc(len + 1);
     sprintf(buffer, format, mname, rname, serial, refresh, retry, expire,
             minimum);
     free(mname);
@@ -293,7 +296,8 @@ rr_parser_container rr_parsers[] = {{1, 1, A, "A", A_DOC, 0},
                                     {0, 47, nsec, "NSEC", NSEC_DOC, 0},
                                     {0, 43, ds, "DS", DS_DOC, 0},
                                     {0, 10, escape, "NULL", NULL_DOC, 0}, 
-                                    {0, 48, dnskey, "DNSKEY", KEY_DOC, 0}
+                                    {0, 48, dnskey, "DNSKEY", KEY_DOC, 0},
+                                    {0, 255, escape, "ANY", NULL_DOC, 0}
                                    };
 
 inline int count_parsers() {

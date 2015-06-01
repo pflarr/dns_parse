@@ -44,7 +44,7 @@ typedef struct {
     char * RECORD_SEP;
     int AD_ENABLED;
     int NS_ENABLED;
-    int LINUX_COOKED;
+    int datalink;
     int COUNTS;
     int PRETTY_DATE;
     int PRINT_RR_NAME;
@@ -55,7 +55,6 @@ typedef struct {
     struct ip_fragment * ip_fragment_head;
     unsigned long long * dedup_hashes;
     uint32_t dedup_pos;
-    
 } config;
 
 // Holds the information for a dns question.

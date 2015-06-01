@@ -575,6 +575,7 @@ void tcp_save_state(config * conf) {
         while (curr_pkt != NULL) {
             tcp_info * prev_pkt = curr_pkt->prev_pkt;
             uint8_t * data = curr_pkt->data;
+            uint32_t len = curr_pkt->len;
             size_t written;
             // Clear all or pointers, or turn them into flags.
             curr_pkt->next_sess = NULL;
@@ -588,14 +589,15 @@ void tcp_save_state(config * conf) {
                 fclose(outfile);
                 return;
             }
-            written = fwrite(data, sizeof(uint8_t), curr_pkt->len, outfile);
-            free(curr_pkt->data);
             free(curr_pkt);
-            if (written != curr_pkt->len) {
+            written = fwrite(data, sizeof(uint8_t), len, outfile);
+            if (written != len) {
                 fprintf(stderr, "Could not write to tcp state file(data).\n");
                 fclose(outfile);
+                free(data);
                 return;
             }
+            free(data);
             curr_pkt = prev_pkt;
         }
     }
@@ -661,6 +663,7 @@ tcp_info * tcp_load_state(config * conf) {
     // Since the last read was of length zero, (all other cases return or 
     // continue) go ahead and free our last allocated object.
     free(pkt);
+    fclose(infile);
 
     return first_sess;
 }
