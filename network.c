@@ -291,7 +291,7 @@ uint32_t ipv6_parse(uint32_t pos, struct pcap_pkthdr *header,
         // If this completed the packet, it is returned.
         frag = ip_frag_add(frag, conf); 
         if (frag != NULL) {
-            ip->length = frag->end - frag->start;
+            header->len = ip->length = frag->end - frag->start;
             *p_packet = frag->data;
             free(frag);
             return 0;
