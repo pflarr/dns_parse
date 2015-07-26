@@ -256,7 +256,7 @@ uint32_t ipv6_parse(uint32_t pos, struct pcap_pkthdr *header,
                 frag = malloc(sizeof(ip_fragment));
                 // Get the offset of the data for this fragment.
                 frag->start = (packet[pos+2] << 8) + (packet[pos+3] & 0xf4);
-                frag->islast = packet[pos+3] & 0x01;
+                frag->islast = !(packet[pos+3] & 0x01);
                 // We don't try to deal with endianness here, since it 
                 // won't matter as long as we're consistent.
                 frag->id = *(uint32_t *)(packet+pos+4);
@@ -291,7 +291,7 @@ uint32_t ipv6_parse(uint32_t pos, struct pcap_pkthdr *header,
         // If this completed the packet, it is returned.
         frag = ip_frag_add(frag, conf); 
         if (frag != NULL) {
-            ip->length = frag->end - frag->start;
+            header->len = ip->length = frag->end - frag->start;
             *p_packet = frag->data;
             free(frag);
             return 0;
