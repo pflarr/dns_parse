@@ -146,7 +146,7 @@ char * srv(const uint8_t * packet, uint32_t pos, uint32_t id_pos,
     if (target == NULL) 
         return mk_error("Bad SRV", packet, pos, rdlength);
     
-    buffer = malloc(sizeof(char) * ((3*5+1) + strlen(target)));
+    buffer = malloc(sizeof(char) * ((3*5+3) + strlen(target)));
     sprintf(buffer, "%d,%d,%d %s", priority, weight, port, target);
     free(target);
     return buffer;
