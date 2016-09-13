@@ -274,6 +274,13 @@ uint32_t ipv6_parse(uint32_t pos, struct pcap_pkthdr *header,
         }
     }
 
+    // check for int overflow
+    if (header_len > ip->length) {
+      fprintf(stderr, "Malformed packet(ipv6)\n");
+      *p_packet = NULL;
+      return 0;
+    }
+
     ip->proto = next_hdr;
     ip->length = ip->length - header_len;
 
