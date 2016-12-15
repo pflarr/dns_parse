@@ -13,7 +13,7 @@ char * escape_data(const uint8_t * packet, uint32_t start, uint32_t end) {
 
     for (i=start; i<end; i++) {
         c = packet[i];
-        if (c < 0x20 || c == 0x5c || c >= 0x75) length += 4;
+        if (c < 0x20 || c == 0x5c || c >= 0x7f) length += 4;
         else length += 1;
     }
 
