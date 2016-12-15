@@ -1,3 +1,4 @@
+#include <ctype.h>
 #include <getopt.h>
 #include <pcap.h>
 #include <stdio.h>

@@ -7,6 +7,14 @@
 // For standard int type declarations.
 #include <stdint.h>
 
+// Fix missing symbols on OSX
+#ifndef s6_addr16
+#define s6_addr16 __u6_addr.__u6_addr16
+#endif
+#ifndef s6_addr32
+#define s6_addr32 __u6_addr.__u6_addr32
+#endif
+
 // Verbosity flags. Switch which function is defined to add or remove
 // various output printfs from the source. These are all for debugging
 // purposes.
