@@ -124,8 +124,8 @@ char * opts(const uint8_t * packet, uint32_t pos, uint32_t id_pos,
 
     buffer = malloc(sizeof(char) * (strlen(base_format) - 20 + 5 + 8 +
                                     strlen(rdata) + 1)); 
-    sprintf(buffer, base_format, payload_size, packet[2], packet[3],
-                                 packet[4], packet[5], rdata);
+    sprintf(buffer, base_format, payload_size, packet[pos+2], packet[pos+3],
+                                 packet[pos+4], packet[pos+5], rdata); 
     free(rdata);
     return buffer;
 }
